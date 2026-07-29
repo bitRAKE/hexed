@@ -40,6 +40,10 @@ include 'common/names.g'
 include 'hexed.h'
 include 'common/vt.g'	; after the structures; see the note in policy.g
 
+; Exposed interface.
+public hex
+public mainCRTStartup
+
 extrn view_clamped
 extrn view_load
 extrn view_rescan
@@ -57,7 +61,6 @@ extrn paint_cells
 extrn paint_status
 extrn paint_pending
 
-public hex
 □	hex	HexState
 □	irec	INPUT_RECORD
 □	io_count dd ?
@@ -90,7 +93,6 @@ proc ConsoleCtrlHandler dwCtrlType
 endp
 
 
-public mainCRTStartup
 proc mainCRTStartup uses rbx rsi rdi
 	locals
 		oldin	dd ?

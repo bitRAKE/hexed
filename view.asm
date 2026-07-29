@@ -34,6 +34,14 @@ include 'common/names.g'
 include 'hexed.h'
 include 'common/vt.g'	; after the structures; see the note in policy.g
 
+; Exposed interface.
+public view_clamped
+public view_load
+public view_clamp_cursor
+public view_rescan
+public view_commit
+public view_restore
+
 extrn hex
 
 □	io_count	dd ?
@@ -43,7 +51,6 @@ extrn hex
 ; BPR-aligned, non-negative, and never past the last page. Shared with the
 ; navigation code so a request that would not move the view can be recognised
 ; before it becomes a question for the user.
-public view_clamped
 proc view_clamped uses rbx
 	lea	rbx, [hex]
 	and	rax, -BPR
@@ -67,7 +74,6 @@ endp
 
 ; Fill the view from the file at view_off and take orig with it. Always safe to
 ; call: nothing unwritten can be in flight here.
-public view_load
 proc view_load uses rbx rsi rdi
 	lea	rbx, [hex]
 	mov	rax, [rbx + HexState.view_off]
@@ -102,7 +108,6 @@ endp
 
 ; Keep the cursor on a byte that exists. Called after every reload, because a
 ; shorter view — end of file, or a smaller window — can leave it past the end.
-public view_clamp_cursor
 proc view_clamp_cursor uses rbx
 	lea	rbx, [hex]
 	mov	eax, [rbx + HexState.cur]
@@ -124,7 +129,6 @@ endp
 ; Recompute the pending change set. Called after every edit; a scan of one
 ; screenful per keystroke costs nothing and means an edit that puts a byte back
 ; the way it was clears the pending state, as it should.
-public view_rescan
 proc view_rescan uses rbx rsi rdi
 	lea	rbx, [hex]
 	mov	dword [rbx + HexState.chg_lo], -1
@@ -155,7 +159,6 @@ endp
 ; The write covers [chg_lo, chg_hi] only. Bytes the user did not touch are not
 ; rewritten with their own values, so the file's timestamp is the only thing
 ; that moves for the rest of the view — and nothing at all outside it.
-public view_commit
 proc view_commit uses rbx rsi rdi
 	locals
 		pos	dq ?
@@ -230,7 +233,6 @@ endp
 
 
 ; Put the view back the way the file has it. No I/O, so this cannot fail.
-public view_restore
 proc view_restore uses rbx rsi rdi
 	lea	rbx, [hex]
 	mov	rsi, [rbx + HexState.orig]

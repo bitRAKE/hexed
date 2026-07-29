@@ -47,13 +47,25 @@ include 'common/names.g'
 include 'hexed.h'
 include 'common/vt.g'	; after the structures; see the note in policy.g
 
+; Exposed interface.
+public vt_flush
+public vt_setup
+public vt_resize
+public vt_restore
+public vt_summary
+public paint_full
+public paint_scroll
+public paint_rows
+public paint_cells
+public paint_status
+public paint_pending
+
 extrn hex
 
 □	io_count	dd ?
 
 
 ; RDI -> end of the composed frame.
-public vt_flush
 proc vt_flush
 	mov	rdx, [hex + HexState.obuf]
 	mov	r8, rdi
@@ -65,7 +77,6 @@ endp
 
 ; Title, then the alternate screen buffer, so the shell's scrollback is left
 ; exactly as it was found.
-public vt_setup
 proc vt_setup uses rbx rsi rdi
 	lea	rbx, [hex]
 	mov	rdi, [hex + HexState.obuf]
@@ -93,7 +104,6 @@ endp
 ; that owns its window — anything over ConPTY — ignores them, and so does the
 ; HWND from GetConsoleWindow, which under ConPTY is a hidden 0x0 stub owned by
 ; this process rather than the terminal's window.
-public vt_resize
 proc vt_resize uses rbx rsi rdi
 	locals
 		want_cols	dd ?
@@ -117,7 +127,6 @@ proc vt_resize uses rbx rsi rdi
 endp
 
 
-public vt_restore
 proc vt_restore uses rbx rsi rdi
 	lea	rbx, [hex]
 	mov	rdi, [hex + HexState.obuf]
@@ -136,7 +145,6 @@ endp
 ; this change the file? — is answered nowhere. It is written to the main
 ; screen, after the alternate buffer is gone, and it doubles as the linefeed
 ; PowerShell wants before it repaints its prompt.
-public vt_summary
 proc vt_summary uses rbx rsi rdi
 	lea	rbx, [hex]
 	mov	rdi, [rbx + HexState.obuf]
@@ -186,7 +194,6 @@ proc vt_summary uses rbx rsi rdi
 endp
 
 
-public paint_full
 proc paint_full uses rbx rsi rdi
 	lea	rbx, [hex]
 	call	frame_begin
@@ -224,7 +231,6 @@ endp
 ; ECX = signed row delta, already applied to view_off and loaded. |ECX| is less
 ; than viewrows; anything larger is not cheaper than a full repaint, and the
 ; caller sends those to paint_full instead.
-public paint_scroll
 proc paint_scroll uses rbx rsi rdi
 	locals
 		delta	dd ?		; signed; the stale-cell arithmetic needs it
@@ -299,7 +305,6 @@ endp
 
 
 ; ECX = first row, EDX = last row, inclusive.
-public paint_rows
 proc paint_rows uses rbx rsi rdi
 	locals
 		endrow	dd ?
@@ -325,7 +330,6 @@ endp
 
 ; ECX = the index that was highlighted; HexState.cur is the one that is now.
 ; Repainting exactly two byte cells is what makes held-down arrow keys cheap.
-public paint_cells
 proc paint_cells uses rbx rsi rdi
 	locals
 		older	dd ?
@@ -344,7 +348,6 @@ proc paint_cells uses rbx rsi rdi
 endp
 
 
-public paint_status
 proc paint_status uses rbx rsi rdi
 	lea	rbx, [hex]
 	call	frame_begin
@@ -359,7 +362,6 @@ endp
 ; geometry cannot be applied until the user has said what to do with them. The
 ; data rows are deliberately not drawn — they would have to be drawn at a
 ; geometry that does not match the buffer they came from.
-public paint_pending
 proc paint_pending uses rbx rsi rdi
 	lea	rbx, [hex]
 	call	frame_begin
