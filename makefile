@@ -57,7 +57,7 @@ verify : hexed.exe
 	"$(llvmbin)\llvm-readobj.exe" --file-headers --sections --coff-imports hexed.exe
 	"$(llvmbin)\llvm-readobj.exe" --unwind hexed.exe
 	"$(llvmbin)\llvm-objdump.exe" -d hexed.exe > hexed.objdump.txt
-	@echo verify: check one sub rsp per procedure, ">=" 32 bytes, size == 8 mod 16
+	@echo verify: ABI-calling procedures have one sub rsp, ">=" 32 bytes, size == 8 mod 16
 
 
 .SILENT :

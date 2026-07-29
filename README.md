@@ -7,7 +7,7 @@ carried onto the `fasm2_calm` projection and MS64 NEWCOFF, the same trajectory
 as the sibling `controls/` tree.
 
 ```
-fasmg -> MS64 NEWCOFF bigobj -> link -> PE64        12,800 bytes, kernel32 only
+fasmg -> MS64 NEWCOFF bigobj -> link -> PE64        12,288 bytes, kernel32 only
 ```
 
 ```cmd
@@ -108,13 +108,16 @@ put the question, and discarding leaves the file exactly as it was.
 `conio` spends its effort displaying events. This spends it on displaying a
 document cheaply while the user moves through it.
 
-**One frame, one write.** Every routine in `paint.asm` composes into a single
-buffer and ends with one `WriteFile`. A console program that writes per fragment
+**One event, one write.** Every routine in `paint.asm` composes into a shared
+buffer and returns without writing. The event loop writes `[obuf,RDI)` once and
+resets `RDI` before waiting again. A console program that writes per fragment
 spends most of its time in the console host, and it shows the moment a key is
 held down. The `<| ... |>` notation carried over from `conio/console.inc`
 appends a pooled constant fragment at `RDI`; the companion `<<...>>` form, which
 writes on the spot, is deliberately *not* carried over, because a routine that
-writes on its own breaks the rule everything else is built on.
+writes on its own breaks the rule everything else is built on. The XTWINOPS
+resize is the single sequencing exception: it drains before the legacy resize
+and readback so they observe the request.
 
 **Damage, not redraw.** A full repaint is the exceptional case:
 
@@ -299,12 +302,25 @@ hexed/
     vt.g               the `<| ... |>` frame-fragment notation
 ```
 
-`RBX` points at the single `HexState` throughout; `RDI` is the frame-buffer
-write pointer through all of `paint.asm`. The `emit_*` leaves take no frame:
-they make no calls and cannot fault, so there is nothing for an unwinder to
-describe. Everything that calls Win32 is a `proc`, because a plain label making
-a projection call would stage its outgoing arguments over its own return
-address.
+The application thread owns its nonvolatile registers, as `conio` does.
+`mainCRTStartup` sets `RBX` to the single `HexState` and `RBP` to the current
+`INPUT_RECORD` once; neither is rediscovered by an internal routine. `RDI` is
+the frame-buffer write pointer. The event loop writes `[obuf,RDI)` and resets
+`RDI` to `obuf`, while `arena_fit` rebases it when an allocation moves. `RSI`
+is the source cursor used by string scans and the `<| ... |>` fragment
+notation.
+
+Internal procedures do not save and restore registers already owned by the
+program. Windows preserves them, and the entry point terminates through
+`ExitProcess` rather than returning to a caller. Procedures that execute an ABI
+call have an aligned static-RSP frame; output builders only call private leaves
+and need no ABI call frame. The `emit_*` leaves take no frame: they make no
+calls and cannot fault, so there is nothing for an unwinder to describe.
+
+`ConsoleCtrlHandler` is the exception to the single-thread register contract:
+Windows may enter it on another thread with unrelated register values. It
+therefore reaches the quit event through the absolute `hex` object and relies
+on none of `RBX`, `RBP`, `RSI` or `RDI`.
 
 ## Two things this tree was the first to hit
 

@@ -42,7 +42,11 @@ public view_rescan
 public view_commit
 public view_restore
 
-extrn hex
+; Internal application-thread interface: RBX is the permanent HexState pointer,
+; RBP is the current INPUT_RECORD, and RDI remains the frame-buffer cursor.
+; These routines use volatile R10/R11 for view copies and comparisons so they
+; do not disturb the persistent rendering state. The state pointer is an
+; inherited register contract, not a per-object external memory reference.
 
 □	io_count	dd ?
 
@@ -51,8 +55,7 @@ extrn hex
 ; BPR-aligned, non-negative, and never past the last page. Shared with the
 ; navigation code so a request that would not move the view can be recognised
 ; before it becomes a question for the user.
-proc view_clamped uses rbx
-	lea	rbx, [hex]
+proc view_clamped
 	and	rax, -BPR
 	jns	.positive
 	xor	eax, eax
@@ -74,8 +77,7 @@ endp
 
 ; Fill the view from the file at view_off and take orig with it. Always safe to
 ; call: nothing unwritten can be in flight here.
-proc view_load uses rbx rsi rdi
-	lea	rbx, [hex]
+proc view_load
 	mov	rax, [rbx + HexState.view_off]
 	call	view_clamped
 	mov	[rbx + HexState.view_off], rax
@@ -93,11 +95,13 @@ proc view_load uses rbx rsi rdi
 
 	; The whole buffer is copied, not just the valid part, so the bytes past
 	; end of file compare equal and can never be reported as changes.
-	mov	rsi, [rbx + HexState.view]
-	mov	rdi, [rbx + HexState.orig]
+	mov	r10, [rbx + HexState.view]
+	mov	r11, [rbx + HexState.orig]
 	mov	ecx, [rbx + HexState.view_cap]
-	shr	ecx, 3			; view_cap is a multiple of BPR
-	rep	movsq
+.copy:	sub	ecx, 8			; view_cap is a multiple of BPR
+	mov	rax, [r10 + rcx]
+	mov	[r11 + rcx], rax
+	jnz	.copy
 
 	mov	dword [rbx + HexState.chg_lo], -1
 	mov	dword [rbx + HexState.chg_hi], -1
@@ -108,8 +112,7 @@ endp
 
 ; Keep the cursor on a byte that exists. Called after every reload, because a
 ; shorter view — end of file, or a smaller window — can leave it past the end.
-proc view_clamp_cursor uses rbx
-	lea	rbx, [hex]
+proc view_clamp_cursor
 	mov	eax, [rbx + HexState.cur]
 	mov	ecx, [rbx + HexState.view_bytes]
 	test	ecx, ecx
@@ -129,18 +132,17 @@ endp
 ; Recompute the pending change set. Called after every edit; a scan of one
 ; screenful per keystroke costs nothing and means an edit that puts a byte back
 ; the way it was clears the pending state, as it should.
-proc view_rescan uses rbx rsi rdi
-	lea	rbx, [hex]
+proc view_rescan
 	mov	dword [rbx + HexState.chg_lo], -1
 	mov	dword [rbx + HexState.chg_hi], -1
 	mov	ecx, [rbx + HexState.view_bytes]
 	test	ecx, ecx
 	jz	.done
-	mov	rsi, [rbx + HexState.view]
-	mov	rdi, [rbx + HexState.orig]
+	mov	r10, [rbx + HexState.view]
+	mov	r11, [rbx + HexState.orig]
 	xor	eax, eax
-.scan:	mov	dl, [rsi + rax]
-	cmp	dl, [rdi + rax]
+.scan:	mov	dl, [r10 + rax]
+	cmp	dl, [r11 + rax]
 	jz	.same
 	cmp	dword [rbx + HexState.chg_lo], 0
 	jns	.high
@@ -159,11 +161,10 @@ endp
 ; The write covers [chg_lo, chg_hi] only. Bytes the user did not touch are not
 ; rewritten with their own values, so the file's timestamp is the only thing
 ; that moves for the rest of the view — and nothing at all outside it.
-proc view_commit uses rbx rsi rdi
+proc view_commit
 	locals
 		pos	dq ?
 	endl
-	lea	rbx, [hex]
 	cmp	dword [rbx + HexState.chg_lo], 0
 	js	.clean
 	cmp	dword [rbx + HexState.readonly], 0
@@ -195,11 +196,13 @@ proc view_commit uses rbx rsi rdi
 	add	[rbx + HexState.written], rcx
 
 	; The file now says what the view says.
-	mov	rsi, [rbx + HexState.view]
-	mov	rdi, [rbx + HexState.orig]
+	mov	r10, [rbx + HexState.view]
+	mov	r11, [rbx + HexState.orig]
 	mov	ecx, [rbx + HexState.view_cap]
-	shr	ecx, 3			; view_cap is a multiple of BPR
-	rep	movsq
+.copy:	sub	ecx, 8			; view_cap is a multiple of BPR
+	mov	rax, [r10 + rcx]
+	mov	[r11 + rcx], rax
+	jnz	.copy
 	mov	dword [rbx + HexState.chg_lo], -1
 	mov	dword [rbx + HexState.chg_hi], -1
 
@@ -233,13 +236,14 @@ endp
 
 
 ; Put the view back the way the file has it. No I/O, so this cannot fail.
-proc view_restore uses rbx rsi rdi
-	lea	rbx, [hex]
-	mov	rsi, [rbx + HexState.orig]
-	mov	rdi, [rbx + HexState.view]
+proc view_restore
+	mov	r10, [rbx + HexState.orig]
+	mov	r11, [rbx + HexState.view]
 	mov	ecx, [rbx + HexState.view_cap]
-	shr	ecx, 3			; view_cap is a multiple of BPR
-	rep	movsq
+.copy:	sub	ecx, 8			; view_cap is a multiple of BPR
+	mov	rax, [r10 + rcx]
+	mov	[r11 + rcx], rax
+	jnz	.copy
 	mov	dword [rbx + HexState.chg_lo], -1
 	mov	dword [rbx + HexState.chg_hi], -1
 .m_restored GLOBSTR 'restored',0

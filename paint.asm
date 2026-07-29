@@ -1,10 +1,11 @@
 ; Display.
 ;
-; ONE FRAME, ONE WRITE
+; ONE EVENT, ONE WRITE
 ;
-; Every routine below composes into the frame buffer and ends with a single
-; WriteFile. A console program that writes per fragment spends nearly all of
-; its time in the console host, and it shows the moment a key is held down.
+; Every routine below composes into the frame buffer and returns to the event
+; loop, which writes the completed frame once. A console program that writes
+; per fragment spends nearly all of its time in the console host, and it shows
+; the moment a key is held down.
 ;
 ; DAMAGE, NOT REDRAW
 ;
@@ -34,9 +35,11 @@
 ;
 ; REGISTERS
 ;
-; RBX -> hex, RDI = frame-buffer write pointer, both live across every helper
-; here. The `<| |>` fragment notation clobbers RSI and RCX, which is why no
-; helper holds anything in them. The emit_* leaves take no frame: they make no
+; The application thread owns its nonvolatile registers. RBX -> hex for the
+; process lifetime; RBP -> the current INPUT_RECORD; RDI is the frame-buffer
+; write pointer; RSI is the source cursor used by `<| |>` and string scans.
+; The event loop returns RDI to the start of the current output buffer after
+; writing a completed frame. The emit_* leaves take no frame: they make no
 ; calls and cannot fault, so there is nothing for an unwinder to describe.
 
 define win32.select.types system_console
@@ -48,7 +51,6 @@ include 'hexed.h'
 include 'common/vt.g'	; after the structures; see the note in policy.g
 
 ; Exposed interface.
-public vt_flush
 public vt_setup
 public vt_resize
 public vt_restore
@@ -60,26 +62,17 @@ public paint_cells
 public paint_status
 public paint_pending
 
-extrn hex
+; All entry points are internal to that application thread. Windows preserves
+; RBX/RBP/RSI/RDI across API calls; no routine here performs ABI-style saving
+; of registers already owned by the program. RBX is inherited from the entry
+; thread rather than loaded through an external `hex` reference.
 
 □	io_count	dd ?
 
 
-; RDI -> end of the composed frame.
-proc vt_flush
-	mov	rdx, [hex + HexState.obuf]
-	mov	r8, rdi
-	sub	r8, rdx
-	WriteFile [hex + HexState.hOutput], rdx, r8, &io_count, 0
-	ret
-endp
-
-
 ; Title, then the alternate screen buffer, so the shell's scrollback is left
 ; exactly as it was found.
-proc vt_setup uses rbx rsi rdi
-	lea	rbx, [hex]
-	mov	rdi, [hex + HexState.obuf]
+proc vt_setup
 	<| 27,']0;hexed - ' |>
 	mov	rsi, [rbx + HexState.name]
 .title:	lodsb
@@ -91,7 +84,6 @@ proc vt_setup uses rbx rsi rdi
 	<|	7,\
 		27,'[?1049h',\		; alternate screen buffer
 		27,'[?25l'	|>	; nothing is painted until the size is known
-	call	vt_flush
 	ret
 endp
 
@@ -104,15 +96,13 @@ endp
 ; that owns its window — anything over ConPTY — ignores them, and so does the
 ; HWND from GetConsoleWindow, which under ConPTY is a hidden 0x0 stub owned by
 ; this process rather than the terminal's window.
-proc vt_resize uses rbx rsi rdi
+proc vt_resize
 	locals
 		want_cols	dd ?
 		want_lines	dd ?
 	endl
 	mov	[want_cols], ecx		; the fragment notation clobbers RCX
 	mov	[want_lines], edx
-	lea	rbx, [hex]
-	mov	rdi, [rbx + HexState.obuf]
 	<| 27,'[8;' |>
 	mov	eax, [want_lines]
 	call	emit_dec
@@ -122,18 +112,21 @@ proc vt_resize uses rbx rsi rdi
 	call	emit_dec
 	mov	al, 't'
 	stosb
-	call	vt_flush
+	; This is the one mid-event drain. The legacy resize and the readback in
+	; the caller must happen after the terminal has received XTWINOPS.
+	mov	rdx, [rbx + HexState.obuf]
+	mov	r8, rdi
+	sub	r8, rdx
+	WriteFile [rbx + HexState.hOutput], rdx, r8, &io_count, 0
+	mov	rdi, [rbx + HexState.obuf]
 	ret
 endp
 
 
-proc vt_restore uses rbx rsi rdi
-	lea	rbx, [hex]
-	mov	rdi, [hex + HexState.obuf]
+proc vt_restore
 	<|	27,'[r',\			; release the scroll region
 		27,'[m',27,'[?25h',\
 		27,'[?1049l'		|>	; main screen buffer
-	call	vt_flush
 	ret
 endp
 
@@ -145,9 +138,7 @@ endp
 ; this change the file? — is answered nowhere. It is written to the main
 ; screen, after the alternate buffer is gone, and it doubles as the linefeed
 ; PowerShell wants before it repaints its prompt.
-proc vt_summary uses rbx rsi rdi
-	lea	rbx, [hex]
-	mov	rdi, [rbx + HexState.obuf]
+proc vt_summary
 	<| 'hexed: ' |>
 	mov	rsi, [rbx + HexState.name]
 .name:	lodsb
@@ -189,13 +180,11 @@ proc vt_summary uses rbx rsi rdi
 	<| ' pending byte DISCARDED' |>
 .done:
 	<| 13,10 |>
-	call	vt_flush
 	ret
 endp
 
 
-proc paint_full uses rbx rsi rdi
-	lea	rbx, [hex]
+proc paint_full
 	call	frame_begin
 	cmp	dword [rbx + HexState.toosmall], 0
 	jnz	.small
@@ -210,7 +199,6 @@ proc paint_full uses rbx rsi rdi
 	jc	.row
 	call	render_status
 	call	frame_end
-	call	vt_flush
 	ret
 
 .small:
@@ -223,7 +211,6 @@ proc paint_full uses rbx rsi rdi
 	call	emit_attr
 	<| 'hexed: needs 76 columns and 4 lines; this window will not take them.' |>
 	<| 27,'[?25h' |>
-	call	vt_flush
 	ret
 endp
 
@@ -231,14 +218,13 @@ endp
 ; ECX = signed row delta, already applied to view_off and loaded. |ECX| is less
 ; than viewrows; anything larger is not cheaper than a full repaint, and the
 ; caller sends those to paint_full instead.
-proc paint_scroll uses rbx rsi rdi
+proc paint_scroll
 	locals
 		delta	dd ?		; signed; the stale-cell arithmetic needs it
 		count	dd ?		; how many rows, unsigned
 		endrow	dd ?
 	endl
 	mov	[delta], ecx
-	lea	rbx, [hex]
 	call	frame_begin
 
 	mov	eax, [delta]
@@ -299,17 +285,15 @@ proc paint_scroll uses rbx rsi rdi
 
 	call	render_status
 	call	frame_end
-	call	vt_flush
 	ret
 endp
 
 
 ; ECX = first row, EDX = last row, inclusive.
-proc paint_rows uses rbx rsi rdi
+proc paint_rows
 	locals
 		endrow	dd ?
 	endl
-	lea	rbx, [hex]
 	mov	eax, [rbx + HexState.viewrows]
 	dec	eax
 	cmp	edx, eax
@@ -323,19 +307,17 @@ proc paint_rows uses rbx rsi rdi
 	jbe	.row
 	call	render_status
 	call	frame_end
-	call	vt_flush
 	ret
 endp
 
 
 ; ECX = the index that was highlighted; HexState.cur is the one that is now.
 ; Repainting exactly two byte cells is what makes held-down arrow keys cheap.
-proc paint_cells uses rbx rsi rdi
+proc paint_cells
 	locals
 		older	dd ?
 	endl
 	mov	[older], ecx
-	lea	rbx, [hex]
 	call	frame_begin
 	mov	r11d, [older]
 	call	render_cell
@@ -343,17 +325,14 @@ proc paint_cells uses rbx rsi rdi
 	call	render_cell
 	call	render_status
 	call	frame_end
-	call	vt_flush
 	ret
 endp
 
 
-proc paint_status uses rbx rsi rdi
-	lea	rbx, [hex]
+proc paint_status
 	call	frame_begin
 	call	render_status
 	call	frame_end
-	call	vt_flush
 	ret
 endp
 
@@ -362,8 +341,7 @@ endp
 ; geometry cannot be applied until the user has said what to do with them. The
 ; data rows are deliberately not drawn — they would have to be drawn at a
 ; geometry that does not match the buffer they came from.
-proc paint_pending uses rbx rsi rdi
-	lea	rbx, [hex]
+proc paint_pending
 	call	frame_begin
 	<| 27,'[r',27,'[2J' |>
 	mov	eax, ATTR_NORM
@@ -380,7 +358,6 @@ proc paint_pending uses rbx rsi rdi
 	<| 'The window was resized, so the view has to be rebuilt.' |>
 	call	render_status
 	call	frame_end
-	call	vt_flush
 	ret
 endp
 
@@ -389,7 +366,6 @@ endp
 ; Plain labels from here down: no frames, no calls out, RBX and RDI live.
 
 frame_begin:
-	mov	rdi, [rbx + HexState.obuf]
 	mov	dword [rbx + HexState.attr], ATTR_UNKNOWN
 	<| 27,'[?25l' |>
 	retn

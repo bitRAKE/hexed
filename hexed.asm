@@ -44,6 +44,17 @@ include 'common/vt.g'	; after the structures; see the note in policy.g
 public hex
 public mainCRTStartup
 
+; Application-thread register contract. mainCRTStartup never returns, every
+; internal call runs on that one thread, and Win64 preserves these registers:
+;
+;   RBX = &hex, for the lifetime of the process
+;   RBP = &irec, for the lifetime of the event loop
+;   RDI = next byte in the frame buffer; the event loop drains and resets it
+;   RSI = source/scan cursor, intentionally owned scratch
+;
+; ConsoleCtrlHandler is entered by Windows on another thread and therefore
+; relies on none of them.
+
 extrn view_clamped
 extrn view_load
 extrn view_rescan
@@ -54,6 +65,7 @@ extrn vt_setup
 extrn vt_resize
 extrn vt_restore
 extrn vt_summary
+
 extrn paint_full
 extrn paint_scroll
 extrn paint_rows
@@ -65,6 +77,18 @@ extrn paint_pending
 □	irec	INPUT_RECORD
 □	io_count dd ?
 ≡	codepage_favorites dd HEXED_CODEPAGES
+
+IREC_EVENT_TYPE		:= irec.EventType - irec
+IREC_KEY_DOWN		:= irec.Event.KeyEvent.bKeyDown - irec
+IREC_KEY_VK		:= irec.Event.KeyEvent.wVirtualKeyCode - irec
+IREC_KEY_CHAR		:= irec.Event.KeyEvent.uChar.UnicodeChar - irec
+IREC_KEY_CONTROL	:= irec.Event.KeyEvent.dwControlKeyState - irec
+IREC_WINDOW_X		:= irec.Event.WindowBufferSizeEvent.dwSize.X - irec
+IREC_WINDOW_Y		:= irec.Event.WindowBufferSizeEvent.dwSize.Y - irec
+IREC_MOUSE_X		:= irec.Event.MouseEvent.dwMousePosition.X - irec
+IREC_MOUSE_Y		:= irec.Event.MouseEvent.dwMousePosition.Y - irec
+IREC_MOUSE_BUTTONS	:= irec.Event.MouseEvent.dwButtonState - irec
+IREC_MOUSE_FLAGS	:= irec.Event.MouseEvent.dwEventFlags - irec
 
 ; The console as it was found, captured before anything is changed and used to
 ; put the width back on the way out.
@@ -93,7 +117,7 @@ proc ConsoleCtrlHandler dwCtrlType
 endp
 
 
-proc mainCRTStartup uses rbx rsi rdi
+proc mainCRTStartup
 	locals
 		oldin	dd ?
 		oldout	dd ?
@@ -101,6 +125,7 @@ proc mainCRTStartup uses rbx rsi rdi
 		fsize	dq ?
 	endl
 	lea	rbx, [hex]
+	lea	rbp, [irec]
 	mov	dword [rbx + HexState.result], 1
 	mov	dword [rbx + HexState.chg_lo], -1
 	mov	dword [rbx + HexState.chg_hi], -1
@@ -202,6 +227,7 @@ proc mainCRTStartup uses rbx rsi rdi
 .have_arena:
 	mov	[rbx + HexState.arena], rax
 	mov	[rbx + HexState.obuf], rax
+	mov	rdi, rax		; first empty frame; the event loop maintains it
 	mov	qword [rbx + HexState.arena_size], OBUF_SLACK
 	add	rax, OBUF_SLACK
 	mov	[rbx + HexState.view], rax
@@ -222,6 +248,14 @@ proc mainCRTStartup uses rbx rsi rdi
 	call	vt_setup
 
 ;--------------------------------------------------------------------- the loop
+.safe_vt_flush:
+	mov	rdx, [rbx + HexState.obuf]
+	mov	r8, rdi
+	sub	r8, rdx
+	jz	.loop
+	WriteFile [rbx + HexState.hOutput], rdx, r8, &io_count, 0
+	mov	rdi, [rbx + HexState.obuf]
+
 .loop:
 	lea	rax, [rbx + HexState.hInput]	; hInput, hQuit — adjacent
 	WaitForMultipleObjects 2, rax, FALSE, -1
@@ -230,13 +264,13 @@ proc mainCRTStartup uses rbx rsi rdi
 	cmp	eax, WAIT_OBJECT_0
 	jnz	.finish				; WAIT_FAILED: leave cleanly
 
-	ReadConsoleInputW [rbx + HexState.hInput], &irec, 1, &nread
+	ReadConsoleInputW [rbx + HexState.hInput], rbp, 1, &nread
 	test	eax, eax		; BOOL
 	jz	.loop
 	cmp	dword [nread], 1
 	jnz	.loop
 
-	movzx	eax, word [irec.EventType]
+	movzx	eax, word [rbp + IREC_EVENT_TYPE]
 	cmp	eax, KEY_EVENT
 	jz	.key
 	cmp	eax, MOUSE_EVENT
@@ -245,22 +279,22 @@ proc mainCRTStartup uses rbx rsi rdi
 	jz	.resize
 	jmp	.loop
 
-.key:	cmp	dword [irec.Event.KeyEvent.bKeyDown], 0
+.key:	cmp	dword [rbp + IREC_KEY_DOWN], 0
 	jz	.key_up
 	cmp	dword [rbx + HexState.prompt], PROMPT_NONE
 	jz	.key_editor
 	call	on_prompt_key
-	jmp	.loop
+	jmp	.safe_vt_flush
 .key_editor:
 	cmp	dword [rbx + HexState.toosmall], 0
 	jnz	.loop
 	call	on_key_down
-	jmp	.loop
+	jmp	.safe_vt_flush
 
 	; ESC is tracked on release, so holding it down cannot repeat its way
 	; out of the program. conio settled this question already.
 .key_up:
-	movzx	eax, word [irec.Event.KeyEvent.wVirtualKeyCode]
+	movzx	eax, word [rbp + IREC_KEY_VK]
 	cmp	eax, VK_ESCAPE
 	jnz	.remember
 	cmp	dword [rbx + HexState.prompt], PROMPT_NAV
@@ -277,25 +311,25 @@ proc mainCRTStartup uses rbx rsi rdi
 	mov	dword [rbx + HexState.last_up_vk], 0
 	mov	qword [rbx + HexState.msg], 0
 	call	paint_status
-	jmp	.loop
+	jmp	.safe_vt_flush
 
 .quit_request:
 	mov	dword [rbx + HexState.last_up_vk], 0
 	mov	ecx, NAV_QUIT
 	xor	edx, edx
 	call	nav_request
-	jmp	.loop
+	jmp	.safe_vt_flush
 
 .mouse:	cmp	dword [rbx + HexState.prompt], PROMPT_NONE
 	jnz	.loop
 	cmp	dword [rbx + HexState.toosmall], 0
 	jnz	.loop
 	call	on_mouse
-	jmp	.loop
+	jmp	.safe_vt_flush
 
 .resize:
 	call	on_resize
-	jmp	.loop
+	jmp	.safe_vt_flush
 
 ;------------------------------------------------------------------- and out
 .finish:
@@ -329,6 +363,11 @@ proc mainCRTStartup uses rbx rsi rdi
 	call	vt_resize
 	call	restore_width
 	call	vt_summary
+	mov	rdx, [rbx + HexState.obuf]
+	mov	r8, rdi
+	sub	r8, rdx
+	WriteFile [rbx + HexState.hOutput], rdx, r8, &io_count, 0
+	mov	rdi, [rbx + HexState.obuf]
 	mov	eax, [rbx + HexState.oldOutCP]
 	SetConsoleOutputCP eax
 	mov	eax, [rbx + HexState.oldOutMode]
@@ -343,8 +382,7 @@ endp
 
 ; RSI -> message. Says why, then leaves. Only reached before the console has
 ; been reconfigured, so there is nothing to put back.
-proc die uses rbx rsi rdi
-	lea	rbx, [hex]
+proc die
 	mov	rdi, rsi
 	xor	eax, eax
 	mov	ecx, -1
@@ -360,7 +398,7 @@ endp
 ; -> RAX = the file name, terminated in place inside the command line, or zero.
 ; A quoted first argument is unwrapped; everything after it is ignored, because
 ; this program has no options to confuse a file name with.
-proc parse_command_line uses rbx rsi
+proc parse_command_line
 	GetCommandLineA
 	mov	rsi, rax
 
@@ -443,7 +481,7 @@ endp
 
 ; ECX = candidate, EDX = number already in HexState.codepages.
 ; EAX = one when appended, zero when invalid, multibyte or duplicate.
-proc append_codepage uses rsi
+proc append_codepage
 	locals
 		page	dd ?
 		count	dd ?
@@ -473,7 +511,7 @@ endp
 
 ; ECX = SBCS identifier -> cache its complete byte-to-Unicode map.
 ; Invalid byte values receive FFFF and are rendered as highlighted dots.
-proc select_codepage uses rsi rdi
+proc select_codepage
 	locals
 		page	dd ?
 		flags	dd ?
@@ -489,7 +527,6 @@ proc select_codepage uses rsi rdi
 	mov	[flags], eax
 
 	xor	esi, esi
-	lea	rdi, [rbx + HexState.glyphs]
 .byte:
 	mov	eax, esi
 	mov	[source], al
@@ -497,10 +534,10 @@ proc select_codepage uses rsi rdi
 	cmp	eax, 1
 	jnz	.invalid
 	movzx	eax, word [wide]
-	mov	[rdi + rsi*2], ax
+	mov	[rbx + HexState.glyphs + rsi*2], ax
 	jmp	.next
 .invalid:
-	mov	word [rdi + rsi*2], 0xFFFF
+	mov	word [rbx + HexState.glyphs + rsi*2], 0xFFFF
 .next:	inc	esi
 	cmp	esi, 256
 	jb	.byte
@@ -515,7 +552,10 @@ endp
 ; HEXED_CODEPAGES favorites. Entries that are unavailable, multibyte or
 ; duplicates are omitted. The shipped first favorite, CP437, is the fallback
 ; when the console starts in UTF-8 or another multibyte code page.
-proc init_codepages uses rsi rdi
+proc init_codepages
+	locals
+		call_align	dq ?
+	endl
 	xor	edi, edi
 
 	mov	ecx, [rbx + HexState.oldOutCP]
@@ -551,8 +591,10 @@ endp
 ;--------------------------------------------------------------------- geometry
 ; Two rows are spoken for: the ruler and the status line. Everything else is
 ; view, however many rows that is — height carries a minimum and no ceiling.
-proc apply_geometry uses rbx
-	lea	rbx, [hex]
+proc apply_geometry
+	locals
+		call_align	dq ?
+	endl
 	mov	dword [rbx + HexState.toosmall], 0
 	mov	eax, [rbx + HexState.cols]
 	cmp	eax, LAYOUT_COLS
@@ -585,11 +627,10 @@ endp
 ; The new allocation is taken before the old one is released — the peak is two
 ; arenas rather than none, and a failure leaves the program still holding a
 ; working buffer to report it with.
-proc arena_fit uses rbx rsi
+proc arena_fit
 	locals
 		need	dq ?
 	endl
-	lea	rbx, [hex]
 	mov	eax, [rbx + HexState.viewrows]
 	imul	rax, rax, ARENA_PER_ROW
 	add	rax, OBUF_SLACK
@@ -610,6 +651,7 @@ proc arena_fit uses rbx rsi
 
 .carve:	mov	rax, [rbx + HexState.arena]
 	mov	[rbx + HexState.obuf], rax
+	mov	rdi, rax		; a new arena also starts a new empty frame
 	mov	ecx, [rbx + HexState.viewrows]
 	imul	rcx, rcx, OBUF_PER_ROW
 	add	rcx, OBUF_SLACK
@@ -644,13 +686,12 @@ endp
 ;
 ; A screen buffer may not be narrower than its window, which fixes the order:
 ; narrow the window before the buffer, widen the buffer before the window.
-proc force_width uses rbx
+proc force_width
 	locals
 		info	CONSOLE_SCREEN_BUFFER_INFO
 		rect	SMALL_RECT
 		size	dd ?
 	endl
-	lea	rbx, [hex]
 	GetConsoleScreenBufferInfo [rbx + HexState.hOutput], &info
 	test	eax, eax		; BOOL
 	jz	.done
@@ -682,12 +723,11 @@ endp
 
 
 ; Give it back, in the mirror order.
-proc restore_width uses rbx
+proc restore_width
 	locals
 		rect	SMALL_RECT
 		size	dd ?
 	endl
-	lea	rbx, [hex]
 	mov	ax, [saved.srWindow.Left]
 	mov	[rect.Left], ax
 	mov	ax, [saved.srWindow.Top]
@@ -724,11 +764,10 @@ endp
 ; coinciding by convention is not the same as being the same number. srWindow
 ; is the thing the layout is actually about, and srWindow.Top is where the
 ; program's row 1 has to land.
-proc read_window uses rbx
+proc read_window
 	locals
 		info	CONSOLE_SCREEN_BUFFER_INFO
 	endl
-	lea	rbx, [hex]
 	GetConsoleScreenBufferInfo [rbx + HexState.hOutput], &info
 	test	eax, eax		; BOOL
 	jz	.done			; keep whatever the caller had
@@ -749,13 +788,15 @@ endp
 
 
 ; The first size event is startup; every later one is a resize. Same path.
-proc on_resize uses rbx
-	lea	rbx, [hex]
+proc on_resize
+	locals
+		call_align	dq ?
+	endl
 	; The event's dwSize is the fallback; read_window replaces it whenever
 	; the console will say what the window is.
-	movsx	eax, word [irec.Event.WindowBufferSizeEvent.dwSize.X]
+	movsx	eax, word [rbp + IREC_WINDOW_X]
 	mov	[rbx + HexState.cols], eax
-	movsx	eax, word [irec.Event.WindowBufferSizeEvent.dwSize.Y]
+	movsx	eax, word [rbp + IREC_WINDOW_Y]
 	mov	[rbx + HexState.lines], eax
 	mov	dword [rbx + HexState.row0], 0
 	call	read_window
@@ -807,14 +848,14 @@ endp
 ; ECX = action, RDX = argument. Either performs it now or holds it behind the
 ; prompt. Every change of view_off in the program comes through here — that is
 ; what makes the guarantee checkable rather than a habit.
-proc nav_request uses rbx
+proc nav_request
 	locals
 		act	dd ?
 		arg	dq ?
+		call_align	dq ?
 	endl
 	mov	[act], ecx
 	mov	[arg], rdx
-	lea	rbx, [hex]
 
 	; A scroll that the clamp would undo is not a request, and must not
 	; become a question.
@@ -847,7 +888,7 @@ endp
 
 
 ; ECX = action, RDX = argument. The view has already been cleared to move.
-proc nav_perform uses rbx rsi rdi
+proc nav_perform
 	locals
 		act	dd ?
 		arg	dq ?
@@ -855,7 +896,6 @@ proc nav_perform uses rbx rsi rdi
 	endl
 	mov	[act], ecx
 	mov	[arg], rdx
-	lea	rbx, [hex]
 
 	cmp	ecx, NAV_QUIT
 	jz	.quit
@@ -909,18 +949,18 @@ endp
 
 
 ;---------------------------------------------------------------------- keys
-proc on_key_down uses rbx rsi rdi
+proc on_key_down
 	locals
 		oldcur	dd ?
 		row_lo	dd ?
 		row_hi	dd ?
+		call_align	dq ?
 	endl
-	lea	rbx, [hex]
 	mov	qword [rbx + HexState.msg], 0
 	mov	eax, [rbx + HexState.cur]
 	mov	[oldcur], eax
 
-	movzx	eax, word [irec.Event.KeyEvent.wVirtualKeyCode]
+	movzx	eax, word [rbp + IREC_KEY_VK]
 	iterate <vk,handler>,\
 		VK_LEFT,	.left,\
 		VK_RIGHT,	.right,\
@@ -993,7 +1033,7 @@ proc on_key_down uses rbx rsi rdi
 	call	nav_request
 	ret
 
-.home:	mov	edx, [irec.Event.KeyEvent.dwControlKeyState]
+.home:	mov	edx, [rbp + IREC_KEY_CONTROL]
 	test	edx, LEFT_CTRL_PRESSED or RIGHT_CTRL_PRESSED
 	jz	.row_start
 	mov	ecx, NAV_GOTO
@@ -1005,7 +1045,7 @@ proc on_key_down uses rbx rsi rdi
 	and	eax, not (BPR-1)
 	jmp	.set_cursor
 
-.end:	mov	edx, [irec.Event.KeyEvent.dwControlKeyState]
+.end:	mov	edx, [rbp + IREC_KEY_CONTROL]
 	test	edx, LEFT_CTRL_PRESSED or RIGHT_CTRL_PRESSED
 	jz	.row_end
 	mov	ecx, NAV_GOTO
@@ -1087,7 +1127,7 @@ proc on_key_down uses rbx rsi rdi
 
 ;--------------------------------------------------------------- data entry
 ;   Everything above this point moves; only what follows can change a byte.
-.typed:	mov	ecx, [irec.Event.KeyEvent.dwControlKeyState]
+.typed:	mov	ecx, [rbp + IREC_KEY_CONTROL]
 	test	ecx, LEFT_CTRL_PRESSED or RIGHT_CTRL_PRESSED\
 		or LEFT_ALT_PRESSED or RIGHT_ALT_PRESSED
 	jnz	.nothing		; a chord is a command, never data
@@ -1096,7 +1136,7 @@ proc on_key_down uses rbx rsi rdi
 	mov	ecx, [rbx + HexState.cur]
 	cmp	ecx, [rbx + HexState.view_bytes]
 	jnc	.nothing		; past end of file; the file never grows
-	movzx	eax, word [irec.Event.KeyEvent.uChar.UnicodeChar]
+	movzx	eax, word [rbp + IREC_KEY_CHAR]
 	test	eax, eax
 	jz	.nothing
 	cmp	dword [rbx + HexState.pane], PANE_ASCII
@@ -1179,9 +1219,11 @@ hex_value:
 ; Only W and R answer. Anything else is ignored rather than guessed at, and
 ; Esc — which cancels a navigation prompt — is handled on release in the main
 ; loop so that a forced prompt simply has no escape.
-proc on_prompt_key uses rbx
-	lea	rbx, [hex]
-	movzx	eax, word [irec.Event.KeyEvent.uChar.UnicodeChar]
+proc on_prompt_key
+	locals
+		call_align	dq ?
+	endl
+	movzx	eax, word [rbp + IREC_KEY_CHAR]
 	or	eax, 0x20
 	cmp	eax, 'w'
 	jz	.write
@@ -1209,14 +1251,16 @@ endp
 
 
 ;--------------------------------------------------------------------- mouse
-proc on_mouse uses rbx
-	lea	rbx, [hex]
-	mov	eax, [irec.Event.MouseEvent.dwEventFlags]
+proc on_mouse
+	locals
+		call_align	dq ?
+	endl
+	mov	eax, [rbp + IREC_MOUSE_FLAGS]
 	test	eax, MOUSE_WHEELED
 	jnz	.wheel
 	test	eax, MOUSE_MOVED
 	jnz	.done			; thin the stream: movement changes nothing
-	test	dword [irec.Event.MouseEvent.dwButtonState],\
+	test	dword [rbp + IREC_MOUSE_BUTTONS],\
 		FROM_LEFT_1ST_BUTTON_PRESSED
 	jz	.done
 	call	on_click
@@ -1224,7 +1268,7 @@ proc on_mouse uses rbx
 
 	; The wheel delta is the high half of dwButtonState, signed. Forward is
 	; positive and means earlier in the file.
-.wheel:	mov	eax, [irec.Event.MouseEvent.dwButtonState]
+.wheel:	mov	eax, [rbp + IREC_MOUSE_BUTTONS]
 	sar	eax, 16
 	mov	ecx, NAV_SCROLL
 	mov	edx, -3
@@ -1240,11 +1284,13 @@ endp
 ; Placing the cursor is motion inside the view, so it needs no permission and
 ; costs the same two cells an arrow key does. Buffer coordinates are 0-based
 ; where VT rows and columns are 1-based.
-proc on_click uses rbx
-	lea	rbx, [hex]
+proc on_click
+	locals
+		call_align	dq ?
+	endl
 	; Mouse coordinates are buffer rows, and the window may not start at the
 	; top of the buffer.
-	movsx	eax, word [irec.Event.MouseEvent.dwMousePosition.Y]
+	movsx	eax, word [rbp + IREC_MOUSE_Y]
 	sub	eax, [rbx + HexState.row0]
 	sub	eax, DATA_ROW0 - 1
 	js	.done
@@ -1252,7 +1298,7 @@ proc on_click uses rbx
 	jnc	.done
 	mov	r8d, eax
 
-	movsx	eax, word [irec.Event.MouseEvent.dwMousePosition.X]
+	movsx	eax, word [rbp + IREC_MOUSE_X]
 	inc	eax
 	cmp	eax, ASCII_COL0
 	jc	.hex_pane
