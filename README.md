@@ -15,7 +15,8 @@ hexed <file>
 ```
 
 Existing files only. Bytes are edited in place; nothing is inserted, deleted,
-or appended, and the file is never resized.
+or appended, and the file is never resized. The PE subsystem version is 10.0,
+so the supported operating-system range is late Windows 10 and Windows 11.
 
 ## Build
 
@@ -322,9 +323,9 @@ Windows may enter it on another thread with unrelated register values. It
 therefore reaches the quit event through the absolute `hex` object and relies
 on none of `RBX`, `RBP`, `RSI` or `RDI`.
 
-## Two things this tree was the first to hit
+## Three things this tree was the first to hit
 
-Both were found by building and running, and both are noted where they bite.
+All three were found by building and running, and are noted where they bite.
 
 **`data_blocks.g` produced a corrupt BSS.** NEWCOFF's intended declaration is
 `section '.bss' readable writeable align 64`, with only uninitialized
@@ -364,6 +365,16 @@ a module declares its structures first and picks up the notation afterwards.
 `conio` satisfies the same constraint by accident — `wincon.g` precedes the
 `<<...>>` and `<|...|>` definitions in `console.inc`, and declares no structures
 after them.
+
+**Subsystem 10.0 normal launch requires load configuration metadata.** Merely
+setting `/SUBSYSTEM:CONSOLE,10.0` made the loader reject the image with
+`0xC000007B` before reaching `mainCRTStartup`; ASLR flags, base relocations and
+x64 unwind metadata do not substitute for that directory. The
+`_load_config_used` object is the 148-byte legacy prefix through `GuardFlags`.
+It truthfully leaves the security-cookie and CFG pointers null and sets
+`IMAGE_GUARD_SECURITY_COOKIE_UNUSED`; the linker publishes it as Load
+Configuration Directory entry 10. This is the minimal normal-launch requirement
+isolated by `fasm2/examples/ss10`.
 
 ## Verified
 

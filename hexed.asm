@@ -40,9 +40,10 @@ include 'common/names.g'
 include 'hexed.h'
 include 'common/vt.g'	; after the structures; see the note in policy.g
 
-; Exposed interface.
+; Exposed and linker-recognized interface.
 public hex
 public mainCRTStartup
+public _load_config_used
 
 ; Application-thread register contract. mainCRTStartup never returns, every
 ; internal call runs on that one thread, and Win64 preserves these registers:
@@ -1339,15 +1340,58 @@ endp
 
 
 ;------------------------------------------------------------------------------
+; Subsystem 10.0 takes the modern normal-launch path through the loader, which
+; requires a valid Load Configuration Directory. There is no stack cookie or
+; CFG instrumentation in this no-CRT image, so the legacy prefix through
+; GuardFlags is the complete truthful structure and says the cookie is unused.
+
+IMAGE_GUARD_SECURITY_COOKIE_UNUSED := 00000800h
+
+section '.rdata$loadcfg' data readable align 8
+
+_load_config_used:
+	dd	.end - _load_config_used	; Size
+	dd	0				; TimeDateStamp
+	dw	0,0				; MajorVersion, MinorVersion
+	dd	0				; GlobalFlagsClear
+	dd	0				; GlobalFlagsSet
+	dd	0				; CriticalSectionDefaultTimeout
+	dq	0				; DeCommitFreeBlockThreshold
+	dq	0				; DeCommitTotalFreeThreshold
+	dq	0				; LockPrefixTable
+	dq	0				; MaximumAllocationSize
+	dq	0				; VirtualMemoryThreshold
+	dq	0				; ProcessAffinityMask
+	dd	0				; ProcessHeapFlags
+	dw	0				; CSDVersion
+	dw	0				; DependentLoadFlags
+	dq	0				; EditList
+	dq	0				; SecurityCookie VA
+	dq	0				; SEHandlerTable
+	dq	0				; SEHandlerCount
+	dq	0				; GuardCFCheckFunctionPointer
+	dq	0				; GuardCFDispatchFunctionPointer
+	dq	0				; GuardCFFunctionTable
+	dq	0				; GuardCFFunctionCount
+	dd	IMAGE_GUARD_SECURITY_COOKIE_UNUSED
+.end:
+	assert	.end - _load_config_used = 148
+
+
 ; The linker options travel with the code that depends on them. Object files
 ; stay in the makefile: build dependencies belong there.
 
 virtual as "response"
 	db '/NOLOGO',10
 	db '/NODEFAULTLIB',10
-	db '/BASE:0x10000',10
-	db '/DYNAMICBASE:NO',10
-	db '/IGNORE:4281',10	; LNK4281 misfires: ASLR is not active for FIXED
-	db '/SUBSYSTEM:CONSOLE,6.02',10
+
+; Create unique binary using image version and checksum:
+	db '/RELEASE',10		; set program checksum in header
+repeat 1,T:__TIME__ shr 16,t:__TIME__ and 0xFFFF
+	db '/VERSION:',`T,'.',`t,10	; time based binary version
+end repeat
+
+	db '/DYNAMICBASE',10
+	db '/SUBSYSTEM:CONSOLE,10.0',10
 	db 'kernel32.lib',10
 end virtual

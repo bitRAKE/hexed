@@ -1,0 +1,18 @@
+# fasmg and linker intermediates
+*.obj
+*.response
+*.objdump.txt
+*.exp
+*.ilk
+*.lib
+*.pdb
+*.exe.dd64
+
+# Local Visual Studio state
+.vs/
+*.suo
+*.user
+
+# Windows shell metadata
+Desktop.ini
+Thumbs.db

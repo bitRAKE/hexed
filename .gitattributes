@@ -1,0 +1,16 @@
+# Keep source stable across Windows and Unix tooling.
+* text=auto eol=lf
+
+# These are all fasmg/fasm2 source, regardless of the conventional extension.
+*.asm text eol=lf linguist-language=Assembly
+*.g   text eol=lf linguist-language=Assembly
+*.h   text eol=lf linguist-language=Assembly
+
+*.md       text eol=lf
+makefile   text eol=lf
+*.response text eol=lf
+
+# Tracked deliverables and media must never undergo text conversion.
+*.exe binary
+*.obj binary
+*.png binary
