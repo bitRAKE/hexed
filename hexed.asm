@@ -11,18 +11,19 @@
 ;
 ; The view — the rows on screen — is the whole editable surface. Typing changes
 ; a byte in the view and nothing else; the cursor cannot leave the view without
-; a navigation request; and a navigation request cannot proceed while the view
-; holds changes the file does not have. The user is asked first:
+; a navigation request. A request proceeds while its destination still contains
+; every changed byte; otherwise the user is asked first:
 ;
 ;       changes pending in this view:  W write   R restore   Esc cancel
 ;
 ; So a keystroke can never modify a byte that was not on screen when it was
-; pressed, and leaving a screen is always a decision rather than an accident.
-; Ctrl and Alt chords are refused by the data-entry path outright, which is the
-; other half of that promise: a mis-typed chord is a no-op, not an edit.
+; pressed, and moving a changed byte off screen is always a decision rather
+; than an accident. Ctrl and Alt chords are refused by the data-entry path
+; outright, which is the other half of that promise: a mis-typed chord is a
+; no-op, not an edit.
 ;
-; A resize is a navigation request too — it rebuilds the view — so it takes the
-; same prompt, minus the cancel that a resize cannot honour.
+; A resize follows the same containment rule. When it would exclude a changed
+; byte it takes the same prompt, minus the cancel a resize cannot honour.
 ;
 ; GEOMETRY COMES FROM THE FIRST EVENT
 ;
@@ -58,6 +59,7 @@ public _load_config_used
 
 extrn view_clamped
 extrn view_load
+extrn view_retain
 extrn view_rescan
 extrn view_commit
 extrn view_restore
@@ -791,7 +793,12 @@ endp
 ; The first size event is startup; every later one is a resize. Same path.
 proc on_resize
 	locals
-		call_align	dq ?
+		old_cap		dd ?
+		new_cap		dd ?
+		next		dq ?
+		change_off	dq ?
+		span		dd ?
+		saved		dq ?
 	endl
 	; The event's dwSize is the fallback; read_window replaces it whenever
 	; the console will say what the window is.
@@ -828,11 +835,128 @@ proc on_resize
 	mov	dword [rbx + HexState.fix_cols], 0
 .width_settled:
 
-	; Rebuilding the view would discard pending changes, so it waits. The
-	; cancel that a navigation prompt offers is not on offer here: the
-	; window is already the size it is.
+	; A resize can proceed with pending changes when the new view still
+	; contains their complete absolute span. Save that span outside the arena
+	; because apply_geometry may move and release the arena, then reload and
+	; reapply it at its rebased index. A smaller view that would exclude a
+	; changed byte still has to ask; the resize itself cannot be cancelled.
 	cmp	dword [rbx + HexState.chg_lo], 0
 	js	.apply
+	cmp	dword [rbx + HexState.cols], LAYOUT_COLS
+	jl	.prompt
+	cmp	dword [rbx + HexState.lines], MIN_LINES
+	jl	.prompt
+
+	mov	eax, [rbx + HexState.lines]
+	sub	eax, 2
+	shl	eax, 4
+	mov	[new_cap], eax
+	mov	eax, [rbx + HexState.view_cap]
+	mov	[old_cap], eax
+	mov	eax, [new_cap]
+	mov	[rbx + HexState.view_cap], eax
+	mov	rax, [rbx + HexState.view_off]
+	call	view_clamped
+	mov	[next], rax
+	mov	eax, [old_cap]
+	mov	[rbx + HexState.view_cap], eax
+
+	mov	eax, [rbx + HexState.chg_lo]
+	add	rax, [rbx + HexState.view_off]
+	mov	[change_off], rax
+	cmp	rax, [next]
+	jb	.prompt
+	mov	eax, [rbx + HexState.chg_hi]
+	add	rax, [rbx + HexState.view_off]
+	mov	rcx, [next]
+	mov	edx, [new_cap]
+	add	rcx, rdx
+	cmp	rax, rcx
+	jnc	.prompt
+
+	mov	ecx, [rbx + HexState.chg_hi]
+	sub	ecx, [rbx + HexState.chg_lo]
+	inc	ecx
+	mov	[span], ecx
+	VirtualAlloc 0, [span], MEM_COMMIT or MEM_RESERVE, PAGE_READWRITE
+	test	rax, rax
+	jz	.prompt
+	mov	[saved], rax
+	mov	r10, [rbx + HexState.view]
+	mov	edx, [rbx + HexState.chg_lo]
+	add	r10, rdx
+	mov	r11, rax
+	mov	ecx, [span]
+.save:	mov	al, [r10]
+	mov	[r11], al
+	inc	r10
+	inc	r11
+	dec	ecx
+	jnz	.save
+
+	call	apply_geometry
+
+	; A growth allocation can fail, in which case arena_fit falls back to the
+	; largest geometry the existing arena can hold. Validate that actual
+	; geometry before touching its newly carved view. If it no longer contains
+	; the pending span, restore the old carving (the failed allocation left
+	; that arena alive) and keep the resize behind the forced prompt.
+	mov	rax, [rbx + HexState.view_off]
+	call	view_clamped
+	mov	[next], rax
+	cmp	[change_off], rax
+	jb	.retain_failed
+	mov	rax, [change_off]
+	mov	edx, [span]
+	add	rax, rdx
+	dec	rax
+	mov	rcx, [next]
+	mov	edx, [rbx + HexState.view_cap]
+	add	rcx, rdx
+	cmp	rax, rcx
+	jnc	.retain_failed
+
+	call	view_load
+	mov	rax, [change_off]
+	sub	rax, [rbx + HexState.view_off]
+	mov	r10, [saved]
+	mov	r11, [rbx + HexState.view]
+	add	r11, rax
+	mov	ecx, [span]
+.reapply:
+	mov	al, [r10]
+	mov	[r11], al
+	inc	r10
+	inc	r11
+	dec	ecx
+	jnz	.reapply
+	call	view_rescan
+	VirtualFree [saved], 0, MEM_RELEASE
+
+	; A later resize may make a previously forced resize fit. It has now been
+	; honoured without discarding anything, so that question is no longer
+	; pending.
+	cmp	dword [rbx + HexState.prompt], PROMPT_FORCED
+	jnz	.retained
+	cmp	dword [rbx + HexState.pend_act], NAV_RESIZE
+	jnz	.retained
+	mov	dword [rbx + HexState.prompt], PROMPT_NONE
+	mov	dword [rbx + HexState.pend_act], NAV_NONE
+	mov	qword [rbx + HexState.msg], 0
+.retained:
+	call	paint_full
+	ret
+
+.retain_failed:
+	mov	eax, [old_cap]
+	shr	eax, 4
+	mov	[rbx + HexState.viewrows], eax
+	mov	eax, [old_cap]
+	mov	[rbx + HexState.view_cap], eax
+	call	arena_fit
+	VirtualFree [saved], 0, MEM_RELEASE
+
+.prompt:
 	mov	dword [rbx + HexState.prompt], PROMPT_FORCED
 	mov	dword [rbx + HexState.pend_act], NAV_RESIZE
 	call	paint_pending
@@ -840,6 +964,7 @@ proc on_resize
 .apply:
 	mov	ecx, NAV_RESIZE
 	xor	edx, edx
+	xor	r8d, r8d
 	call	nav_perform
 	ret
 endp
@@ -853,24 +978,56 @@ proc nav_request
 	locals
 		act	dd ?
 		arg	dq ?
-		call_align	dq ?
+		next	dq ?
 	endl
 	mov	[act], ecx
 	mov	[arg], rdx
 
-	; A scroll that the clamp would undo is not a request, and must not
-	; become a question.
+	; Resolve every view-moving request before it can become a question. A
+	; clamp that leaves the view where it is has nothing to ask or perform.
 	cmp	ecx, NAV_SCROLL
+	jz	.scroll
+	cmp	ecx, NAV_GOTO
 	jnz	.gate
+	mov	rax, rdx
+	jmp	.clamp
+.scroll:
 	movsxd	rax, dword [arg]
 	shl	rax, 4
 	add	rax, [rbx + HexState.view_off]
+.clamp:
 	call	view_clamped
+	mov	[next], rax
 	cmp	rax, [rbx + HexState.view_off]
 	jz	.nothing
 
 .gate:	cmp	dword [rbx + HexState.chg_lo], 0
-	js	.now
+	js	.fresh
+
+	; A scroll or goto can proceed without a prompt when its destination still
+	; contains the complete absolute change span. view_retain reloads the new
+	; range and reapplies that span before painting it.
+	mov	eax, [act]
+	cmp	eax, NAV_SCROLL
+	jz	.contains
+	cmp	eax, NAV_GOTO
+	jnz	.prompt
+.contains:
+	mov	eax, [rbx + HexState.chg_lo]
+	add	rax, [rbx + HexState.view_off]
+	cmp	rax, [next]
+	jb	.prompt
+	mov	eax, [rbx + HexState.chg_hi]
+	add	rax, [rbx + HexState.view_off]
+	mov	rcx, [next]
+	mov	edx, [rbx + HexState.view_cap]
+	add	rcx, rdx
+	cmp	rax, rcx
+	jnc	.prompt
+	mov	r8d, VIEW_RETAIN
+	jmp	.perform
+
+.prompt:
 	mov	eax, [act]
 	mov	[rbx + HexState.pend_act], eax
 	mov	rax, [arg]
@@ -880,23 +1037,28 @@ proc nav_request
 	call	paint_status
 	ret
 
-.now:	mov	ecx, [act]
+.fresh:
+	xor	r8d, r8d
+.perform:
+	mov	ecx, [act]
 	mov	rdx, [arg]
-	call	nav_perform
+	fastcall nav_perform
 .nothing:
 	ret
 endp
 
 
-; ECX = action, RDX = argument. The view has already been cleared to move.
+; ECX = action, RDX = argument, R8D = VIEW_* acquisition/paint mode.
 proc nav_perform
 	locals
 		act	dd ?
 		arg	dq ?
 		delta	dd ?
+		mode	dd ?
 	endl
 	mov	[act], ecx
 	mov	[arg], rdx
+	mov	[mode], r8d
 
 	cmp	ecx, NAV_QUIT
 	jz	.quit
@@ -914,10 +1076,18 @@ proc nav_perform
 	mov	rcx, rax
 	sub	rcx, [rbx + HexState.view_off]
 	jz	.done
-	mov	[rbx + HexState.view_off], rax
 	sar	rcx, 4
 	mov	[delta], ecx
+	cmp	dword [mode], VIEW_RETAIN
+	jz	.retain_scroll
+	mov	[rbx + HexState.view_off], rax
 	call	view_load
+	jmp	.paint_scroll
+.retain_scroll:
+	call	view_retain
+.paint_scroll:
+	cmp	dword [mode], VIEW_REPAINT
+	jz	.repaint
 
 	mov	eax, [delta]
 	cdq
@@ -931,8 +1101,13 @@ proc nav_perform
 
 .goto:	mov	rax, [arg]
 	call	view_clamped
+	cmp	dword [mode], VIEW_RETAIN
+	jz	.retain_goto
 	mov	[rbx + HexState.view_off], rax
 	call	view_load
+	jmp	.repaint
+.retain_goto:
+	call	view_retain
 	jmp	.repaint
 
 .resize:
@@ -1246,6 +1421,7 @@ proc on_prompt_key
 	mov	ecx, [rbx + HexState.pend_act]
 	mov	rdx, [rbx + HexState.pend_arg]
 	mov	dword [rbx + HexState.pend_act], NAV_NONE
+	mov	r8d, VIEW_REPAINT
 	call	nav_perform
 	ret
 endp

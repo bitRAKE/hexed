@@ -34,10 +34,11 @@
 ; holds what the file says, and the difference between them is the pending
 ; change set — there is no separate dirty map to fall out of step.
 ;
-; Because navigation cannot proceed while that difference is non-empty (the
-; prompt intervenes), a view reload can always re-read from the file without
-; consulting anything: there is never an unwritten byte to lose. That invariant
-; is what keeps the display code free of a shadow document.
+; Navigation can carry that difference into an overlapping destination only
+; while every changed absolute byte remains visible. The pending span is saved,
+; the destination and its baseline are read, and the span is reapplied at its
+; new index. A move that would exclude any change prompts instead. This keeps
+; the display code free of a persistent shadow document.
 
 if ~ definite HEXED_H_INCLUDED
 HEXED_H_INCLUDED := 1
@@ -102,13 +103,19 @@ match pages, HEXED_CODEPAGES
 end match
 HEXED_CODEPAGE_CAPACITY := HEXED_CODEPAGE_FAVORITES + 1
 
-; A navigation request is data, because a pending change set defers it: the
-; prompt stores the request and replays it once the user has answered.
+; A navigation request becomes data when its destination would exclude a
+; pending change: the prompt stores the request and replays it once the user
+; has answered.
 NAV_NONE	:= 0
 NAV_SCROLL	:= 1		; pend_arg = signed row delta
 NAV_GOTO	:= 2		; pend_arg = absolute view offset
 NAV_QUIT	:= 3
 NAV_RESIZE	:= 4		; geometry already in cols/lines
+
+; How nav_perform obtains and paints the destination view.
+VIEW_FRESH	:= 0		; clean view: reload and use damage-sized painting
+VIEW_REPAINT	:= 1		; prompt resolved: reload and replace stale attributes
+VIEW_RETAIN	:= 2		; pending span remains visible: reload and reapply it
 
 PROMPT_NONE	:= 0
 PROMPT_NAV	:= 1		; write / restore / cancel

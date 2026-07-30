@@ -265,8 +265,9 @@ proc paint_scroll
 	; cell at the old screen position and no highlight at the new one. The
 	; byte that *should* be drawn where the stale one sits is exactly
 	; `cur - delta*BPR`, so repainting that cell and the cursor's own puts
-	; both right. Only the cursor is at stake: scrolling is refused while
-	; anything is changed, so no cell can be carrying ATTR_CHG here.
+	; both right. When pending changes remain visible, the terminal moves
+	; their attributes with their bytes; repainting either cell recomputes
+	; ATTR_CHG from the rebased view and orig buffers.
 	;
 	; Rendering the exposed rows without this is the bug that made an
 	; up-scroll leave a highlight behind.
@@ -884,10 +885,8 @@ render_status:
 	mov	eax, ATTR_PROMPT
 	call	emit_attr
 	mov	r9, rdi
-	cmp	dword [rbx + HexState.prompt], PROMPT_FORCED
-	jz	.forced
-	<| ' changes pending in this view:  W write   R restore   Esc cancel ' |>
-	jmp	.eol
-.forced:
 	<| ' changes pending in this view:  W write   R restore ' |>
+	cmp	dword [rbx + HexState.prompt], PROMPT_FORCED
+	jz	.eol
+	<| '  Esc cancel ' |>
 	jmp	.eol

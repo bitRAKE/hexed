@@ -63,8 +63,9 @@ The visible view is the complete editable surface. Three rules enforce that:
    `[0, view_bytes)`.
 2. `view_rescan` compares `view` with `orig` after every edit and records the
    first and last differing byte.
-3. Every change of `view_off` passes through `nav_request`, which refuses to
-   replace a modified view until it has been written or restored.
+3. Every change of `view_off` passes through `nav_request`. It permits an
+   overlapping destination only when the complete absolute change span remains
+   visible; otherwise it defers the request behind the prompt.
 
 `view_commit` writes the smallest continuous span containing every difference:
 
@@ -76,8 +77,18 @@ Unchanged bytes between separated edits may be rewritten with their existing
 values. Nothing before `chg_lo`, after `chg_hi`, or outside the current view is
 touched. The write is followed by `FlushFileBuffers`.
 
-Because navigation cannot discard a modified view, `view_load` can reread from
-the file unconditionally. No shadow document or dirty bitmap is needed.
+Clean navigation uses `view_load` directly. Overlapping navigation with pending
+changes uses `view_retain`: the changed span is copied into the empty output
+buffer, the destination view and baseline are reloaded, and the span is
+reapplied at its new index before `view_rescan`. No shadow document or dirty
+bitmap is needed.
+
+Resize follows the same containment rule, but cannot use arena-local scratch
+because `arena_fit` may replace the arena. It saves the changed span in a
+temporary allocation, applies geometry, reloads, reapplies, and frees the
+temporary block. The span is checked again against `arena_fit`'s actual
+geometry, including its allocation-failure fallback. A resize that would
+exclude any changed byte remains a forced prompt.
 
 Ctrl and Alt chords are rejected by the data-entry path. The character pane
 accepts only printable ASCII; the hexadecimal pane provides the full byte range.
@@ -268,7 +279,7 @@ Verified behavior includes:
 - initial `WINDOW_BUFFER_SIZE_EVENT` and first paint
 - all keyboard navigation, wheel scrolling, and click placement
 - hexadecimal and character entry
-- pending-change gating for page, goto, exit, and resize
+- pending-change gating when page, goto, exit, or resize would evict changes
 - write, restore, and prompt cancellation paths
 - width acquisition and exact width/height restoration on exit
 - dynamic heights through 64 lines

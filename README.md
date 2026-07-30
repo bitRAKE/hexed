@@ -31,19 +31,23 @@ memory until you press `F2`; `F5` restores the snapshot loaded for the current
 view. Retyping a byte's original value removes that byte from the pending
 changes.
 
-Navigation that would replace the view—including paging, jumping, quitting, or
-resizing—is held while changes are pending:
+Scrolling, jumping, and resizing proceed without interruption when the
+destination still contains every changed byte. The pending span is rebased into
+the new view and remains highlighted.
+
+A request that would move any changed byte out of view—or exit the
+program—is held:
 
 ```text
 changes pending in this view:  W write   R restore   Esc cancel
 ```
 
 - `W` writes the pending span and continues the requested action.
-- `R` restores the view from disk and continues.
+- `R` restores the loaded snapshot and continues.
 - `Esc` cancels an ordinary navigation request.
 
-A resize has already happened and therefore cannot be cancelled; its prompt
-offers only write or restore.
+A resize that would exclude a changed byte has already happened and therefore
+cannot be cancelled; its prompt offers only write or restore.
 
 `F2` writes directly to the original file and flushes it. There is no backup and
 no undo after a write. If the file cannot be opened for writing, `hexed` opens

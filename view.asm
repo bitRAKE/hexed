@@ -15,11 +15,10 @@
 ;   * A restore is a copy of orig over view. Nothing is read from the file, so
 ;     a restore cannot fail or half-succeed.
 ;
-;   * view_load re-reads from the file unconditionally. That is safe only
-;     because navigation cannot proceed while the difference is non-empty — the
-;     prompt in hexed.asm stands in the way — so there is never an unwritten
-;     byte for a reload to discard. This is the invariant the whole program
-;     rests on.
+;   * view_load re-reads from the file unconditionally. Clean navigation and a
+;     resolved prompt use it directly. view_retain first saves the pending span
+;     in the empty output buffer, reloads, and reapplies that span when a move
+;     keeps every changed byte visible.
 ;
 ; The file is never grown or shortened. A hex editor that edits in place has no
 ; insert and no delete, which is also why ReadFile/WriteFile is the right tool
@@ -37,6 +36,7 @@ include 'common/vt.g'	; after the structures; see the note in policy.g
 ; Exposed interface.
 public view_clamped
 public view_load
+public view_retain
 public view_clamp_cursor
 public view_rescan
 public view_commit
@@ -75,8 +75,8 @@ proc view_clamped
 endp
 
 
-; Fill the view from the file at view_off and take orig with it. Always safe to
-; call: nothing unwritten can be in flight here.
+; Fill the view from the file at view_off and take orig with it. Direct callers
+; are clean; view_retain saves its pending span before coming through here.
 proc view_load
 	mov	rax, [rbx + HexState.view_off]
 	call	view_clamped
@@ -106,6 +106,61 @@ proc view_load
 	mov	dword [rbx + HexState.chg_lo], -1
 	mov	dword [rbx + HexState.chg_hi], -1
 	call	view_clamp_cursor
+	ret
+endp
+
+
+; RAX = the new, already-clamped view offset. Every changed byte is known to fit
+; in the destination view. Preserve the smallest span containing the changes
+; across a reload, using the still-empty output buffer as event-local scratch.
+;
+; Reloading orig is intentional: view remains the user's version while orig is
+; the file's version for the same absolute bytes, so view_rescan can rebase the
+; pending indices without a second representation of the change set.
+proc view_retain
+	locals
+		new_off	dq ?
+		change_off	dq ?
+		span	dd ?
+	endl
+	mov	[new_off], rax
+	mov	ecx, [rbx + HexState.chg_hi]
+	sub	ecx, [rbx + HexState.chg_lo]
+	inc	ecx
+	mov	[span], ecx
+
+	mov	eax, [rbx + HexState.chg_lo]
+	add	rax, [rbx + HexState.view_off]
+	mov	[change_off], rax
+	mov	r10, [rbx + HexState.view]
+	mov	edx, [rbx + HexState.chg_lo]
+	add	r10, rdx
+	mov	r11, [rbx + HexState.obuf]
+	mov	ecx, [span]
+.save:	mov	al, [r10]
+	mov	[r11], al
+	inc	r10
+	inc	r11
+	dec	ecx
+	jnz	.save
+
+	mov	rax, [new_off]
+	mov	[rbx + HexState.view_off], rax
+	fastcall view_load
+
+	mov	rax, [change_off]
+	sub	rax, [new_off]
+	mov	r10, [rbx + HexState.obuf]
+	mov	r11, [rbx + HexState.view]
+	add	r11, rax
+	mov	ecx, [span]
+.apply:	mov	al, [r10]
+	mov	[r11], al
+	inc	r10
+	inc	r11
+	dec	ecx
+	jnz	.apply
+	call	view_rescan
 	ret
 endp
 
