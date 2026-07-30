@@ -158,9 +158,9 @@ endp
 ; Write the pending changes and nothing else. EAX = 1 when the view and the
 ; file agree afterwards.
 ;
-; The write covers [chg_lo, chg_hi] only. Bytes the user did not touch are not
-; rewritten with their own values, so the file's timestamp is the only thing
-; that moves for the rest of the view — and nothing at all outside it.
+; The write covers [chg_lo, chg_hi] only: the smallest continuous span holding
+; every difference. Unchanged bytes between separate edits are rewritten with
+; their existing values; nothing before, after, or outside the view is touched.
 proc view_commit
 	locals
 		pos	dq ?
@@ -235,7 +235,8 @@ proc view_commit
 endp
 
 
-; Put the view back the way the file has it. No I/O, so this cannot fail.
+; Put the view back to the snapshot loaded from the file. No I/O, so this
+; cannot fail.
 proc view_restore
 	mov	r10, [rbx + HexState.orig]
 	mov	r11, [rbx + HexState.view]
