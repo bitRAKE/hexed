@@ -176,7 +176,9 @@ bottom rows and moves the footer above them. `render_panel` draws help locally
 or delegates data forms to `forms_render` in `data_forms.asm`; every
 damage-sized repaint therefore refreshes an open panel. F1 advances help and F4
 rotates float/signed/unsigned forms. The panels are mutually exclusive and
-switch without another geometry change.
+switch without another geometry change. An Escape release closes either panel
+from every page and remains recorded as the first half of the existing
+release-driven `Esc Esc` exit gesture. Prompt cancellation takes priority.
 
 `data_forms.asm` reads little-endian values only when their complete
 representation remains in the loaded view. Integer conversion handles the full

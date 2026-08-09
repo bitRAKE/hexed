@@ -917,7 +917,7 @@ render_panel:
 	<| 'F2 write   F5 restore             F4 data forms',27,'[K',\
 		27,'[1B',13,'F3 next code page                 Tab switch hex/character pane',27,'[K',\
 		27,'[1B',13,'Arrows move; Up/Down scroll       PgUp/PgDn move one screen',27,'[K',\
-		27,'[1B',13,'Home/End row  Ctrl+Home/End file  F1 next help page',27,'[K' |>
+		27,'[1B',13,'Home/End row  Ctrl+Home/End file  Esc close panel',27,'[K' |>
 	retn
 .page2:
 	<| 'Hex pane: 0-9 A-F enter nibbles    Character pane: printable ASCII',27,'[K',\
@@ -929,7 +929,7 @@ render_panel:
 	<| 'Changed bytes are highlighted; character pane uses the shown code page',27,'[K',\
 		27,'[1B',13,'F2 writes the original file directly; there is no backup or undo',27,'[K',\
 		27,'[1B',13,'Ctrl+Break or closing the window discards pending in-memory changes',27,'[K',\
-		27,'[1B',13,'F1 closes help',27,'[K' |>
+		27,'[1B',13,'Esc closes this panel; F1 also closes after this page',27,'[K' |>
 	jmp	.return
 .forms:
 	call	forms_render

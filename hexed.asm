@@ -312,11 +312,22 @@ proc mainCRTStartup
 	jnz	.remember
 	cmp	dword [rbx + HexState.prompt], PROMPT_NAV
 	jz	.cancel
+	cmp	dword [rbx + HexState.panel], PANEL_NONE
+	jnz	.close_panel
 	cmp	dword [rbx + HexState.last_up_vk], VK_ESCAPE
 	jz	.quit_request
 .remember:
 	mov	[rbx + HexState.last_up_vk], eax
 	jmp	.loop
+
+.close_panel:
+	mov	dword [rbx + HexState.panel], PANEL_NONE
+	mov	dword [rbx + HexState.panel_page], 0
+	; This release is still the first half of Esc Esc. Any intervening key-up
+	; replaces last_up_vk through .remember, preserving the existing gesture.
+	mov	dword [rbx + HexState.last_up_vk], VK_ESCAPE
+	call	relayout
+	jmp	.safe_vt_flush
 
 .cancel:
 	mov	dword [rbx + HexState.prompt], PROMPT_NONE

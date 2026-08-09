@@ -75,6 +75,7 @@ pending in-memory changes, restore the terminal, and report the discard on exit.
 | `F5` | restore the loaded snapshot for this view |
 | mouse wheel | scroll three rows |
 | left click | place the cursor |
+| `Esc` | close an open help/data panel, or cancel a navigation prompt |
 | `Esc` `Esc` | request exit; pending changes still require a decision |
 
 Character-pane entry accepts bytes `20h` through `7Eh`. Use the hexadecimal pane
@@ -123,7 +124,9 @@ view displays `n/a`.
 
 F1 and F4 panels are mutually exclusive: pressing the other key switches panels
 without changing the four-row geometry. Moving or editing the active byte
-updates an open data-forms panel immediately.
+updates an open data-forms panel immediately. `Esc` closes either panel from any
+page. That release remains the first half of `Esc` `Esc`, so an immediately
+following `Esc` requests exit; any intervening released key breaks the sequence.
 
 ## Character interpretation
 
