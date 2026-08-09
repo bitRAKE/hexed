@@ -915,14 +915,14 @@ render_panel:
 	jz	.page3
 .page1:
 	<| 'F2 write   F5 restore             F4 data forms',27,'[K',\
-		27,'[1B',13,'F3 next code page               Tab switch hex/character pane',27,'[K',\
-		27,'[1B',13,'Arrows move; Up/Down scroll     PgUp/PgDn move one screen',27,'[K',\
+		27,'[1B',13,'F3 next code page                 Tab switch hex/character pane',27,'[K',\
+		27,'[1B',13,'Arrows move; Up/Down scroll       PgUp/PgDn move one screen',27,'[K',\
 		27,'[1B',13,'Home/End row  Ctrl+Home/End file  F1 next help page',27,'[K' |>
 	retn
 .page2:
-	<| 'Hex pane: 0-9 A-F enter nibbles  Character pane: printable ASCII',27,'[K',\
-		27,'[1B',13,'Mouse wheel scrolls three rows   Left click places the cursor',27,'[K',\
-		27,'[1B',13,'Esc Esc requests exit; pending changes still require a decision',27,'[K',\
+	<| 'Hex pane: 0-9 A-F enter nibbles    Character pane: printable ASCII',27,'[K',\
+		27,'[1B',13,'Mouse wheel scrolls three rows     Left click places the cursor',27,'[K',\
+		27,'[1B',13,'ESC ESC requests exit; pending changes still require a decision',27,'[K',\
 		27,'[1B',13,'At a changes prompt: W writes, R restores, Esc cancels navigation',27,'[K' |>
 	retn
 .page3:
