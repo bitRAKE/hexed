@@ -23,6 +23,23 @@ include 'format.inc'
 include 'x86-2.inc'
 use AMD64
 
+; format.inc's file-extension finalizer (fasm2 3fd6fff and later) expects
+; object-format handlers to set default_extension and leave the one underlying
+; `format binary` selection to POSTPONE. NEWCOFF was merged afterward with its
+; older eager `format binary as 'obj'` arm, so current fasm2 selects the binary
+; format there and then selects it again at finalization: "choice has already
+; been declared". Shadow only this variant with the post-3fd6fff convention;
+; forwarding preserves the installed handler for every other MS64 variant.
+macro format?.MS64? variant
+	match =NEWCOFF?, variant
+		format?.default_extension = 'obj'
+		__include 'format/newcoffms.inc'
+		use64
+	else
+		format.MS64 variant
+	end match
+end macro
+
 ; Set before the format so newcoffcv.inc installs the verbose line tracker.
 NEWCOFF.DEBUG := 6
 format MS64 NEWCOFF

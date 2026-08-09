@@ -11,7 +11,7 @@ The build trajectory is:
 fasmg -> MS64 NEWCOFF bigobj -> link -> PE64
 ```
 
-The resulting executable is 12,288 bytes and imports only `kernel32`.
+The resulting executable imports only `kernel32`.
 
 Run from an x64 Visual Studio developer prompt so `link.exe` and the Windows SDK
 libraries are on `PATH`:
@@ -26,6 +26,13 @@ nmake clean
 `fasmg.exe` is driven directly rather than through `fasm2.cmd`. The wrapper
 pre-includes `fasm2.inc`, which already carries `dd`, `align`, `format`, and
 `x86-2`; [`common/policy.g`](common/policy.g) includes those itself.
+
+The policy also shadows only the `MS64 NEWCOFF` format arm. fasm2's
+file-extension finalizer expects object handlers to set `default_extension`,
+but the later-added NEWCOFF arm still eagerly selects `format binary`; without
+the shim the finalizer selects it a second time and fasmg reports `choice has
+already been declared`. Other MS64 format variants still forward to fasm2's
+installed handler.
 
 [`hexed.asm`](hexed.asm) emits the linker response through
 `virtual as "response"`, keeping executable policy beside the code that depends
@@ -48,6 +55,7 @@ hexed/
   hexed.asm             entry, console lifetime, event loop, input and response
   view.asm              view load, commit, restore, rescan, and clamp
   paint.asm             VT composition and rendering
+  data_forms.asm        active-byte float/signed/unsigned interpretation
   common/
     policy.g            NEWCOFF, projection, PROC, unwind, and debug policy
     names.g             short spellings for projected values
@@ -133,8 +141,8 @@ viewrows * OBUF_PER_ROW + OBUF_SLACK
 ```
 
 `OBUF_PER_ROW` covers the pathological per-row rendering cost; the slack covers
-the ruler, footer, prompts, setup, and teardown. A normal event composes at most
-one complete frame between drains.
+the ruler, footer, four panel lines, prompts, setup, and teardown. A normal event
+composes at most one complete frame between drains.
 
 ### Damage-sized painters
 
@@ -143,7 +151,7 @@ one complete frame between drains.
 | `paint_cells` | two byte cells and the footer | cursor movement and typing |
 | `paint_scroll` | one `SU`/`SD`, exposed rows, two cells | short scrolling |
 | `paint_rows` | an inclusive row range and footer | write or restore |
-| `paint_status` | footer only | pane changes and messages |
+| `paint_status` | footer and open four-line panel | pane/panel changes |
 | `paint_full` | complete screen | resize, page movement, goto, code page |
 
 Scrolling uses `DECSTBM` over only the data rows. The terminal moves the address
@@ -156,11 +164,29 @@ Every emitted class begins from SGR 0, so classes do not depend on an unwind
 order. The terminal's real cursor is parked on the selected nibble or character
 at frame end.
 
-### Footer and exit summary
+### Footer, persistent panels, and exit summary
 
 The footer is reverse-video across the complete logical width. It is padded
 explicitly because `ESC[K` erases using colours, while reverse video is an
 attribute and would end with the text.
+
+The normal footer contains only file name, total byte count, code page, and the
+`Tab pane` / `F1 help` hints. While `panel` is nonzero, geometry reserves four
+bottom rows and moves the footer above them. `render_panel` draws help locally
+or delegates data forms to `forms_render` in `data_forms.asm`; every
+damage-sized repaint therefore refreshes an open panel. F1 advances help and F4
+rotates float/signed/unsigned forms. The panels are mutually exclusive and
+switch without another geometry change.
+
+`data_forms.asm` reads little-endian values only when their complete
+representation remains in the loaded view. Integer conversion handles the full
+signed/unsigned 64-bit range and inserts comma groups. Float conversion handles
+binary16, binary32, binary64, and the 10-byte x87 binary80 encoding without a
+CRT dependency. It temporarily selects the x87 64-bit significand and
+round-to-nearest modes, restores the caller's control word, and emits compact
+fixed or scientific decimal plus signed zero, infinity, NaN, and `n/a`. Fixed
+integer groups use commas and fractional groups use spaces; scientific
+significands use the same three-digit fractional spacing.
 
 The alternate screen is removed on exit, so `vt_summary` writes one persistent
 line to the restored main screen describing bytes written and any pending bytes
@@ -203,6 +229,11 @@ wider window is used from the left; a narrower one produces the size warning.
 The arena grows with `viewrows` and is carved into output, `view`, and `orig`
 regions. It never shrinks, avoiding allocation churn during resize. On
 allocation failure, the view is shortened to the capacity already available.
+
+Opening and closing either panel also changes `viewrows`. It uses the same
+`relayout` path as a window resize, including the save/reload/reapply path for
+pending changes, so four panel rows never cover bytes that the editor still
+considers visible and editable.
 
 Nothing is painted until the first `WINDOW_BUFFER_SIZE_EVENT` after alternate
 screen activation. Startup and subsequent resize therefore share the same
@@ -293,6 +324,11 @@ Verified behavior includes:
 - complete 76-column footer and distinct prompt attributes
 - persistent `written` and `unchanged` exit summaries
 - PE subsystem 10.0 normal launch with the load-config directory present
+
+The data-form renderer also has focused output-vector coverage for binary32
+pi, signed 8-/32-/64-bit minima, unsigned 64-bit maximum, and incomplete input.
+Float, signed, and unsigned rows were checked for their exact right-edge
+positions, including the shorter `u8`/`s8` label fields and signed `-1`.
 
 Not exercised:
 

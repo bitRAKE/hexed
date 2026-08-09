@@ -289,8 +289,18 @@ proc mainCRTStartup
 	call	on_prompt_key
 	jmp	.safe_vt_flush
 .key_editor:
+	; A four-line panel can make a resized window temporarily too small. F1/F4
+	; must still reach the dispatcher so the user can page it closed again.
 	cmp	dword [rbx + HexState.toosmall], 0
+	jz	.key_ready
+	cmp	dword [rbx + HexState.panel], PANEL_NONE
+	jz	.loop
+	movzx	eax, word [rbp + IREC_KEY_VK]
+	cmp	eax, VK_F1
+	jz	.key_ready
+	cmp	eax, VK_F4
 	jnz	.loop
+.key_ready:
 	call	on_key_down
 	jmp	.safe_vt_flush
 
@@ -592,8 +602,9 @@ endp
 
 
 ;--------------------------------------------------------------------- geometry
-; Two rows are spoken for: the ruler and the status line. Everything else is
-; view, however many rows that is — height carries a minimum and no ceiling.
+; Two rows are always spoken for: the ruler and the status line. An open panel
+; takes four more beneath the status. Everything else is view, however many
+; rows that is — height carries a minimum and no ceiling.
 proc apply_geometry
 	locals
 		call_align	dq ?
@@ -603,9 +614,18 @@ proc apply_geometry
 	cmp	eax, LAYOUT_COLS
 	jl	.too_small
 	mov	eax, [rbx + HexState.lines]
-	cmp	eax, MIN_LINES
+	mov	ecx, MIN_LINES
+	cmp	dword [rbx + HexState.panel], PANEL_NONE
+	jz	.have_minimum
+	add	ecx, HELP_ROWS
+.have_minimum:
+	cmp	eax, ecx
 	jl	.too_small
 	sub	eax, 2
+	cmp	dword [rbx + HexState.panel], PANEL_NONE
+	jz	.have_rows
+	sub	eax, HELP_ROWS
+.have_rows:
 	mov	[rbx + HexState.viewrows], eax
 	call	arena_fit		; may lower viewrows, never raises it
 	mov	eax, [rbx + HexState.viewrows]
@@ -792,14 +812,6 @@ endp
 
 ; The first size event is startup; every later one is a resize. Same path.
 proc on_resize
-	locals
-		old_cap		dd ?
-		new_cap		dd ?
-		next		dq ?
-		change_off	dq ?
-		span		dd ?
-		saved		dq ?
-	endl
 	; The event's dwSize is the fallback; read_window replaces it whenever
 	; the console will say what the window is.
 	movsx	eax, word [rbp + IREC_WINDOW_X]
@@ -834,6 +846,23 @@ proc on_resize
 .width_taken:
 	mov	dword [rbx + HexState.fix_cols], 0
 .width_settled:
+	call	relayout
+	ret
+endp
+
+
+; Rebuild the view after either a real window resize or an F1/F4 transition that
+; opens/closes the four-row panel. Pending bytes are retained whenever the new
+; visible view can still contain their complete absolute span.
+proc relayout
+	locals
+		old_cap		dd ?
+		new_cap		dd ?
+		next		dq ?
+		change_off	dq ?
+		span		dd ?
+		saved		dq ?
+	endl
 
 	; A resize can proceed with pending changes when the new view still
 	; contains their complete absolute span. Save that span outside the arena
@@ -844,11 +873,20 @@ proc on_resize
 	js	.apply
 	cmp	dword [rbx + HexState.cols], LAYOUT_COLS
 	jl	.prompt
-	cmp	dword [rbx + HexState.lines], MIN_LINES
+	mov	eax, MIN_LINES
+	cmp	dword [rbx + HexState.panel], PANEL_NONE
+	jz	.have_minimum
+	add	eax, HELP_ROWS
+.have_minimum:
+	cmp	dword [rbx + HexState.lines], eax
 	jl	.prompt
 
 	mov	eax, [rbx + HexState.lines]
 	sub	eax, 2
+	cmp	dword [rbx + HexState.panel], PANEL_NONE
+	jz	.have_rows
+	sub	eax, HELP_ROWS
+.have_rows:
 	shl	eax, 4
 	mov	[new_cap], eax
 	mov	eax, [rbx + HexState.view_cap]
@@ -1147,8 +1185,10 @@ proc on_key_down
 		VK_HOME,	.home,\
 		VK_END,		.end,\
 		VK_TAB,		.pane,\
+		VK_F1,		.help,\
 		VK_F2,		.write,\
 		VK_F3,		.charset,\
+		VK_F4,		.forms,\
 		VK_F5,		.restore
 
 		cmp	eax, vk
@@ -1250,6 +1290,49 @@ proc on_key_down
 	ret
 
 ;   Pane and file commands.
+.help:
+	mov	ecx, PANEL_HELP
+	mov	edx, HELP_PAGES
+	jmp	.panel_key
+.forms:
+	mov	ecx, PANEL_FORMS
+	mov	edx, FORM_PAGES
+.panel_key:
+	mov	r8d, [rbx + HexState.panel]
+	cmp	r8d, ecx
+	jnz	.switch_panel
+
+	mov	eax, [rbx + HexState.panel_page]
+	inc	eax
+	cmp	eax, edx
+	jbe	.set_panel_page
+	mov	dword [rbx + HexState.panel], PANEL_NONE
+	mov	dword [rbx + HexState.panel_page], 0
+	jmp	.panel_layout		; one press beyond the last page closes it
+
+.switch_panel:
+	cmp	r8d, PANEL_NONE
+	jnz	.activate_panel		; switching panels keeps the same geometry
+	cmp	dword [rbx + HexState.lines], MIN_LINES + HELP_ROWS
+	jl	.nothing		; keep at least the normal two data rows
+.activate_panel:
+	mov	[rbx + HexState.panel], ecx
+	mov	eax, 1
+.set_panel_page:
+	mov	[rbx + HexState.panel_page], eax
+	test	r8d, r8d
+	jz	.panel_layout		; closed -> open: four fewer view rows
+	cmp	dword [rbx + HexState.toosmall], 0
+	jnz	.panel_full		; keep the recoverable size warning intact
+	call	paint_status		; page change: only the five panel rows differ
+	ret
+.panel_full:
+	call	paint_full
+	ret
+.panel_layout:
+	call	relayout
+	ret
+
 .pane:	mov	eax, [rbx + HexState.pane]
 	xor	eax, PANE_ASCII
 	mov	[rbx + HexState.pane], eax

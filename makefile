@@ -35,7 +35,7 @@ calminc = $(win32json)\generated\fasm2_calm\x64;$(win32json);$(fasm2root)\includ
 	$(fasm2) -e 5 $< $@
 
 
-OBJECTS = hexed.obj view.obj paint.obj
+OBJECTS = hexed.obj view.obj paint.obj data_forms.obj
 
 POLICY = common\policy.g common\names.g common\data_blocks.g common\vt.g hexed.h
 

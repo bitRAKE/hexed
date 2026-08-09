@@ -9,8 +9,9 @@
 ;     offset  00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  0123456789ABCDEF
 ;   00000000  7F 45 4C 46 02 01 01 00  00 00 00 00 00 00 00 00  .ELF............
 ;
-; Row 1 is the ruler, row LINES is status or prompt, and the rows between are
-; the view.
+; Row 1 is the ruler. Normally row LINES is status or prompt and the rows
+; between are the view. While a help or data-forms panel is open, the status
+; moves up HELP_ROWS and the four rows beneath it hold that panel.
 ;
 ; WIDTH IS THE PROGRAM'S, HEIGHT IS THE USER'S
 ;
@@ -46,6 +47,9 @@ HEXED_H_INCLUDED := 1
 BPR		:= 16		; bytes per row
 LAYOUT_COLS	:= 76		; the width the layout needs, and the width it takes
 MIN_LINES	:= 4		; ruler + one view row + status, and one to spare
+HELP_ROWS	:= 4		; persistent help is paged four lines at a time
+HELP_PAGES	:= 3		; F1 advances; one press past this closes help
+FORM_PAGES	:= 3		; floats, signed integers, unsigned integers
 
 HDR_ROW		:= 1
 DATA_ROW0	:= 2
@@ -86,6 +90,10 @@ ATTR_UNKNOWN	:= -1		; frame start: force the next SGR
 
 PANE_HEX	:= 0
 PANE_ASCII	:= 1
+
+PANEL_NONE	:= 0
+PANEL_HELP	:= 1
+PANEL_FORMS	:= 2
 
 ; Single-byte code pages for the right-hand pane. The console output code page
 ; captured at startup is prepended when it is an SBCS; F3 then cycles that page
@@ -157,6 +165,8 @@ struct HexState
 	?cur		dd ?	; cursor, index into view
 	?nibble		dd ?	; 0 = high, 1 = low; hex pane only
 	?pane		dd ?
+	?panel		dd ?	; PANEL_*; reserves HELP_ROWS when nonzero
+	?panel_page	dd ?	; 1-based page within the selected panel
 	?charset	dd ?	; index into codepages
 	?codepage	dd ?	; active byte-to-Unicode mapping
 	?codepage_count	dd ?
@@ -178,6 +188,7 @@ struct HexState
 
 	?codepages	dd HEXED_CODEPAGE_CAPACITY dup ?
 	?glyphs		dw 256 dup ?	; byte -> BMP code point; FFFF = invalid
+	?form_text	db 96 dup ?	; one formatted data-form value
 ends
 
 assert HexState.hQuit = 8 + HexState.hInput

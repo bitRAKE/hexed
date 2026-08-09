@@ -17,7 +17,7 @@
 ;   paint_rows     a row range plus status         a write or restore landed
 ;   paint_cells    two byte cells plus status      the cursor moved, a byte
 ;                                                  was typed
-;   paint_status   the last line                   pane toggle, a note
+;   paint_status   status plus open panel          pane/panel changes
 ;
 ; Arrow-key navigation — the thing the user does most — costs paint_cells:
 ; four cursor addresses, four SGR changes, three characters of payload, about
@@ -49,6 +49,8 @@ include 'common/policy.g'
 include 'common/names.g'
 include 'hexed.h'
 include 'common/vt.g'	; after the structures; see the note in policy.g
+
+extrn forms_render
 
 ; Exposed interface.
 public vt_setup
@@ -209,7 +211,13 @@ proc paint_full
 	call	emit_cup
 	mov	eax, ATTR_NORM
 	call	emit_attr
+	cmp	dword [rbx + HexState.panel], PANEL_NONE
+	jnz	.small_panel
 	<| 'hexed: needs 76 columns and 4 lines; this window will not take them.' |>
+	jmp	.small_done
+.small_panel:
+	<| 'hexed: needs 76 columns and 8 lines while a data panel is open.' |>
+.small_done:
 	<| 27,'[?25h' |>
 	ret
 endp
@@ -774,15 +782,15 @@ emit_dec:
 
 
 ;-------------------------------------------------------------------- the footer
-; What is NOT on screen already.
+; Identity and the two discoverability hints that stay useful on every frame.
 ;
 ; The offset, the byte under the cursor and its character were all in here, and
 ; all three are things the user reads off the view — the cursor is highlighted,
 ; the address is at the head of its row, the character is in the right-hand
-; pane. Restating them cost a line and told nobody anything. What the view
-; cannot say is which file this is, how big it is, how the right-hand pane is
-; being read, and whether what is on screen matches the disk. That is the
-; footer.
+; pane. Restating them cost a line and told nobody anything. The compact footer
+; now holds only the file name, total byte count, code page, and the Tab/F1
+; hints. Commands and explanations live in the persistent paged help beneath
+; it when requested.
 ;
 ; It is drawn reversed and padded to the window edge so it reads as a bar
 ; rather than as another row of data. The prompt takes the whole line in a
@@ -791,6 +799,12 @@ emit_dec:
 
 render_status:
 	mov	eax, [rbx + HexState.lines]
+	cmp	dword [rbx + HexState.panel], PANEL_NONE
+	jz	.positioned
+	cmp	eax, MIN_LINES + HELP_ROWS
+	jl	.positioned		; a resize may have made the open panel not fit
+	sub	eax, HELP_ROWS
+.positioned:
 	add	eax, [rbx + HexState.row0]
 	mov	edx, 1
 	call	emit_cup
@@ -817,7 +831,9 @@ render_status:
 .sep:	mov	rcx, rsi		; one past the separator
 	jmp	.scan
 .base:	mov	rsi, rcx
-	mov	ecx, 28
+	; 21 characters plus '~' leaves room for every required field even when
+	; both the byte count and code-page identifier use ten decimal digits.
+	mov	ecx, 21
 .name:	lodsb
 	test	al, al
 	jz	.sized
@@ -835,27 +851,7 @@ render_status:
 	<| 'cp' |>
 	mov	eax, [rbx + HexState.codepage]
 	call	emit_dec
-
-.flags:	cmp	dword [rbx + HexState.readonly], 0
-	jz	.mod
-	<| '  read-only' |>
-	jmp	.note
-.mod:	cmp	dword [rbx + HexState.chg_lo], 0
-	js	.note
-	<| '  MODIFIED' |>
-
-.note:	mov	rsi, [rbx + HexState.msg]
-	test	rsi, rsi
-	jz	.keys
-	<| '  - ' |>
-	mov	rsi, [rbx + HexState.msg]
-.copy:	lodsb
-	test	al, al
-	jz	.eol
-	stosb
-	jmp	.copy
-.keys:
-	<| '   F2 write  F5 restore  F3 charset  Tab pane  Esc Esc quit' |>
+	<| '   Tab pane   F1 help' |>
 
 ; Pad or clip to the window edge.
 ;
@@ -879,6 +875,7 @@ render_status:
 .clip:	lea	rdi, [r9 + rax]
 .done:	mov	eax, ATTR_NORM
 	call	emit_attr
+	call	render_panel
 	retn
 
 .prompt:
@@ -890,3 +887,51 @@ render_status:
 	jz	.eol
 	<| '  Esc cancel ' |>
 	jmp	.eol
+
+
+; Four persistent lines below the raised status bar. Help is rendered here;
+; data forms live in their own object and share the same positioned surface.
+render_panel:
+	mov	eax, [rbx + HexState.panel]
+	cmp	eax, PANEL_NONE
+	jz	.return
+	cmp	dword [rbx + HexState.lines], MIN_LINES + HELP_ROWS
+	jl	.return
+
+	mov	r10d, [rbx + HexState.panel_page]
+	mov	eax, [rbx + HexState.lines]
+	sub	eax, HELP_ROWS - 1	; first help row follows the raised status
+	add	eax, [rbx + HexState.row0]
+	mov	edx, 1
+	call	emit_cup
+	mov	eax, ATTR_NORM
+	call	emit_attr
+	cmp	dword [rbx + HexState.panel], PANEL_FORMS
+	jz	.forms
+
+	cmp	r10d, 2
+	jz	.page2
+	cmp	r10d, 3
+	jz	.page3
+.page1:
+	<| 'F2 write   F5 restore             F4 data forms',27,'[K',\
+		27,'[1B',13,'F3 next code page               Tab switch hex/character pane',27,'[K',\
+		27,'[1B',13,'Arrows move; Up/Down scroll     PgUp/PgDn move one screen',27,'[K',\
+		27,'[1B',13,'Home/End row  Ctrl+Home/End file  F1 next help page',27,'[K' |>
+	retn
+.page2:
+	<| 'Hex pane: 0-9 A-F enter nibbles  Character pane: printable ASCII',27,'[K',\
+		27,'[1B',13,'Mouse wheel scrolls three rows   Left click places the cursor',27,'[K',\
+		27,'[1B',13,'Esc Esc requests exit; pending changes still require a decision',27,'[K',\
+		27,'[1B',13,'At a changes prompt: W writes, R restores, Esc cancels navigation',27,'[K' |>
+	retn
+.page3:
+	<| 'Changed bytes are highlighted; character pane uses the shown code page',27,'[K',\
+		27,'[1B',13,'F2 writes the original file directly; there is no backup or undo',27,'[K',\
+		27,'[1B',13,'Ctrl+Break or closing the window discards pending in-memory changes',27,'[K',\
+		27,'[1B',13,'F1 closes help',27,'[K' |>
+	jmp	.return
+.forms:
+	call	forms_render
+.return:
+	retn

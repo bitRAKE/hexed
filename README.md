@@ -51,7 +51,7 @@ cannot be cancelled; its prompt offers only write or restore.
 
 `F2` writes directly to the original file and flushes it. There is no backup and
 no undo after a write. If the file cannot be opened for writing, `hexed` opens
-it read-only, marks that state in the footer, and refuses data entry.
+it read-only and refuses data entry.
 
 Ctrl+Break and closing the console cannot stop for a prompt. They safely discard
 pending in-memory changes, restore the terminal, and report the discard on exit.
@@ -66,7 +66,9 @@ pending in-memory changes, restore the terminal, and report the discard on exit.
 | `Home` `End` | move to the start or end of the row |
 | `Ctrl+Home` `Ctrl+End` | move to the start or final page of the file |
 | `Tab` | switch between the hexadecimal and character panes |
+| `F1` | open or advance help; one press past the final page closes it |
 | `F3` | select the next configured single-byte code page |
+| `F4` | rotate through float, signed, and unsigned data forms, then close |
 | `0`–`9`, `A`–`F` | enter a nibble in the hexadecimal pane |
 | printable ASCII | enter a byte in the character pane |
 | `F2` | write pending changes |
@@ -91,12 +93,37 @@ their character interpretation:
 Changed bytes are highlighted. The real terminal caret is placed on the nibble
 or character that will receive the next keystroke.
 
-The footer shows information not already visible in the dump:
+The compact footer contains only:
 
-- file name and size
-- active character mapping, such as `cp437`
-- `read-only` or `MODIFIED` state
-- the most recent status message
+- file name
+- total bytes
+- active code page, such as `cp437`
+- `Tab pane`
+- `F1 help`
+
+F1 moves the footer four rows higher and displays four lines of help beneath
+it. The help remains visible while editing. Each additional F1 press advances
+by four lines; pressing F1 once beyond the final page closes help and returns
+those four rows to the data view.
+
+F4 uses the same persistent four-line area to interpret bytes beginning at the
+active byte. Its pages are:
+
+1. IEEE `f16`, `f32`, `f64`, and x87 `f80` floating-point values
+2. signed `s8`, `s16`, `s32`, and `s64` integers
+3. unsigned `u8`, `u16`, `u32`, and `u64` integers
+
+The selected family receives the wide value field while the other two families
+remain as row labels. Integers are little-endian, comma-grouped decimal. Float
+output preserves signed zero, infinity, and NaN, and uses grouped scientific
+notation for very large or small values. Fixed notation separates integer
+thousands with commas and fractional digits into three-digit space groups. A
+form whose complete 2-, 4-, 8-, or 10-byte representation is not in the loaded
+view displays `n/a`.
+
+F1 and F4 panels are mutually exclusive: pressing the other key switches panels
+without changing the four-row geometry. Moving or editing the active byte
+updates an open data-forms panel immediately.
 
 ## Character interpretation
 
@@ -124,7 +151,9 @@ exit.
 The editor uses sixteen bytes per row and therefore owns a fixed width of 76
 columns. It asks the terminal to take that width while running and restores the
 original width and height on exit. Height is dynamic: every line beyond the
-ruler and footer becomes another data row.
+ruler and footer becomes another data row. An open help or data-forms panel
+reserves the bottom four lines, so the visible data view is four rows shorter
+until the panel is closed.
 
 If the console host refuses resizing, a wider window is used from its left edge.
 A narrower window displays a size warning and recovers when sufficient space is

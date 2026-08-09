@@ -61,8 +61,10 @@ win32names \
 	VK_UP,			win32.VIRTUAL_KEY.VK_UP,\
 	VK_RIGHT,		win32.VIRTUAL_KEY.VK_RIGHT,\
 	VK_DOWN,		win32.VIRTUAL_KEY.VK_DOWN,\
+	VK_F1,			win32.VIRTUAL_KEY.VK_F1,\
 	VK_F2,			win32.VIRTUAL_KEY.VK_F2,\
 	VK_F3,			win32.VIRTUAL_KEY.VK_F3,\
+	VK_F4,			win32.VIRTUAL_KEY.VK_F4,\
 	VK_F5,			win32.VIRTUAL_KEY.VK_F5,\
 \	; UTF-8 out, so the right-hand pane can draw more than ASCII
 	CP_UTF8,		win32.constant.Globalization.CP_UTF8,\
