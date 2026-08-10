@@ -164,6 +164,11 @@ Every emitted class begins from SGR 0, so classes do not depend on an unwind
 order. The terminal's real cursor is parked on the selected nibble or character
 at frame end.
 
+The 76-column ruler is erased before its text is written. Its final `F` occupies
+the terminal's last column; erasing afterward would include that cell while the
+terminal still holds a delayed-wrap cursor there. The following absolute cursor
+move cancels delayed wrap safely.
+
 ### Footer, persistent panels, and exit summary
 
 The footer is reverse-video across the complete logical width. It is padded

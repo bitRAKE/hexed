@@ -431,7 +431,10 @@ render_header:
 	call	emit_cup
 	mov	eax, ATTR_DIM
 	call	emit_attr
-	<| '  offset  00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  0123456789ABCDEF',27,'[K' |>
+	; The ruler's F occupies column 76. EL after writing it erases that same
+	; cell while the terminal is in delayed-wrap state. Clear first; the CUP for
+	; the first data row then cancels delayed wrap without touching the F.
+	<| 27,'[2K','  offset  00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  0123456789ABCDEF' |>
 	retn
 
 
