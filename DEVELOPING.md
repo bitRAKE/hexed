@@ -5,63 +5,91 @@ requirements, and verification history. See [README.md](README.md) for usage.
 
 ## Build
 
-The build trajectory is:
+This is the low fixed-base port of [bitRAKE/hexed](https://github.com/bitRAKE/hexed),
+built on this repository's PSDK projection. The trajectory is unchanged:
 
 ```text
 fasmg -> MS64 NEWCOFF bigobj -> link -> PE64
 ```
 
-The resulting executable imports only `kernel32`.
+The resulting executable imports `kernel32`, and `user32` for placing its window
+(see Geometry and console lifetime). `preamble.inc` selects full `NEWCOFF.DEBUG=6`, so
+the link also writes `hexed.pdb`. From the repository root:
 
-Run from an x64 Visual Studio developer prompt so `link.exe` and the Windows SDK
-libraries are on `PATH`:
-
-```cmd
-VsDevCmd.bat -arch=amd64 -host_arch=amd64
-nmake
-nmake verify
-nmake clean
+```bat
+examples\_build.cmd hexed
 ```
 
-`fasmg.exe` is driven directly rather than through `fasm2.cmd`. The wrapper
-pre-includes `fasm2.inc`, which already carries `dd`, `align`, `format`, and
-`x86-2`; [`common/policy.g`](common/policy.g) includes those itself.
+The script assembles every `.asm` in this folder and links `hexed.exe` from the
+response file that [`hexed.asm`](hexed.asm) writes. That file names the other
+objects and libraries beside the code that depends on them: `program` gives the
+entry point, subsystem and load configuration, and `response` adds the rest.
 
-The policy also shadows only the `MS64 NEWCOFF` format arm. fasm2's
-file-extension finalizer expects object handlers to set `default_extension`,
-but the later-added NEWCOFF arm still eagerly selects `format binary`; without
-the shim the finalizer selects it a second time and fasmg reports `choice has
-already been declared`. Other MS64 format variants still forward to fasm2's
-installed handler.
+`namespace.inc` publishes editor-only project metadata under `__EDITOR__`:
+`build.preamble = 'preamble.inc'` selects the shared language environment,
+`project.modules.1` through `.4` order view, paint, data forms, then the program
+object, and `build.hexed.steps.1` names `link @hexed.response`. Every module also
+includes `namespace.inc`, which includes the guarded preamble for native builds.
 
-[`hexed.asm`](hexed.asm) emits the linker response through
-`virtual as "response"`, keeping executable policy beside the code that depends
-on it. Object membership and dependencies remain in the makefile.
+The selected preamble contains lowbase and CodeView/PROC/unwind policy. SDK
+headers remain module-specific. Full debug checksums are retained: CALM hashing
+and per-assembly checksum reuse remove repeated interpreted hashing. See the
+[measured performance comparison](../../projects/editor/docs/hexed-performance.md)
+for the native/editor timings and the SDK-union configuration that was rejected.
 
-`nmake verify` emits header, import, unwind, and disassembly information for
-manual inspection. Generated objects, response files, and disassembly output are
-ignored by Git.
+For inspection, LLVM's tools read the image:
+
+```bat
+llvm-readobj --file-headers --coff-imports --coff-load-config hexed.exe
+llvm-readobj --unwind hexed.exe
+llvm-objdump -d hexed.exe
+```
 
 ## Repository layout
 
 ```text
-hexed/
-  .gitattributes        line-ending, binary, and source-language handling
-  .gitignore            assembler, linker, debugger, and IDE byproducts
+examples\hexed\
   README.md             user documentation
   DEVELOPING.md         this document
-  makefile              fasmg, link, and inspection trajectory
+  roadmap.md            features that need more thought
+  namespace.inc         project manifest and native preamble entry
+  preamble.inc          shared lowbase/CodeView/PROC/unwind policy
   hexed.h               geometry, HexState, and cross-object contracts
+  vt.inc                pooled `<| ... |>` output-fragment notation
   hexed.asm             entry, console lifetime, event loop, input and response
   view.asm              view load, commit, restore, rescan, and clamp
   paint.asm             VT composition and rendering
   data_forms.asm        active-byte float/signed/unsigned interpretation
-  common/
-    policy.g            NEWCOFF, projection, PROC, unwind, and debug policy
-    names.g             short spellings for projected values
-    data_blocks.g       pooled CONST, DATA, and BSS gatherers
-    vt.g                pooled `<| ... |>` output-fragment notation
 ```
+
+What the port replaced:
+
+- **`common/policy.g`** became `namespace.inc` over `include\lowbase.inc`, which
+  supplies the prelude, NEWCOFF, the data anchors, PROC/ENDP with the low-base
+  fastcall, and the string pools.
+  - fasm2's NEWCOFF format no longer needs the `format MS64 NEWCOFF` shim.
+  - `newcoff_debug_prologue` now forwards `<reglist>` grouped, so the
+    `hexed_debug_prologue` shim is gone too.
+- **`common/names.g` is gone.** The PSDK projection already spells every value
+  as the SDK does (`ENABLE_VIRTUAL_TERMINAL_PROCESSING`, `VK_F1`), so no short
+  aliases are needed.
+- **Each module includes the SDK headers it uses**, after `namespace.inc` and in
+  one order:
+  - the base types (`minwindef`, `windef`, `winnt`);
+  - kernel32 by subject: console, files and handles, memory, process,
+    synchronization, text, and the `WinBase` catch-all last;
+  - then user32.
+
+  `hexed.asm` needs 17, `view.asm` two, `paint.asm` one, and `data_forms.asm`
+  none.
+- **`common/data_blocks.g` became the anchors of `include\macro\anchor.inc`.**
+  `≡`/`∵`/`□` lines are `CONST.n`/`DATA.n`/`BSS.n` lines, placed by
+  alignment. The GLOBSTR pool lives in CONST.
+- **`common/vt.g` is `vt.inc`.** A fragment's address is `mov esi,fragment`:
+  5 bytes and an ADDR32 relocation.
+- **Direct image addresses are 32-bit immediates** everywhere a label alone
+  was loaded (`mov ebx,hex`, `mov esi,.m_usage`, `mov eax,forms_na`).
+  Register-formed addresses keep `lea`.
 
 ## State and edit invariants
 
@@ -151,7 +179,7 @@ composes at most one complete frame between drains.
 | `paint_cells` | two byte cells and the footer | cursor movement and typing |
 | `paint_scroll` | one `SU`/`SD`, exposed rows, two cells | short scrolling |
 | `paint_rows` | an inclusive row range and footer | write or restore |
-| `paint_status` | footer and open four-line panel | pane/panel changes |
+| `paint_status` | footer and open four-line panel | pane/panel changes, Ctrl+G entry |
 | `paint_full` | complete screen | resize, page movement, goto, code page |
 
 Scrolling uses `DECSTBM` over only the data rows. The terminal moves the address
@@ -176,7 +204,7 @@ explicitly because `ESC[K` erases using colours, while reverse video is an
 attribute and would end with the text.
 
 The normal footer contains only file name, total byte count, code page, and the
-`Tab pane` / `F1 help` hints. While `panel` is nonzero, geometry reserves four
+`Tab pane` / `F1 help` hints, then the offset field. While `panel` is nonzero, geometry reserves four
 bottom rows and moves the footer above them. `render_panel` draws help locally
 or delegates data forms to `forms_render` in `data_forms.asm`; every
 damage-sized repaint therefore refreshes an open panel. F1 advances help and F4
@@ -194,6 +222,63 @@ round-to-nearest modes, restores the caller's control word, and emits compact
 fixed or scientific decimal plus signed zero, infinity, NaN, and `n/a`. Fixed
 integer groups use commas and fractional groups use spaces; scientific
 significands use the same three-digit fractional spacing.
+
+The offset field takes the footer's last `GOTO_CHARS + 2` columns, from
+`FIELD_COL0`, whenever the window is at least `LAYOUT_COLS` wide. The text
+before it is padded to `FIELD_COL0 - 1` first. The field shows the cursor's
+offset: `0x` and eight digits, or decimal right-aligned in ten columns.
+
+The address column has nine columns, and decimal in it is right-aligned and
+truncating: `emit_dec_field` keeps the low nine digits of a ten-digit offset.
+The field therefore carries the whole offset.
+
+Ctrl+G turns the field into an entry line. `HexState.goto` routes every key to
+`.goto_key` while it is set:
+- printable keys append to `goto_text`, up to `GOTO_CHARS` of `0-9 a-f $ h x`;
+- Backspace removes one;
+- Enter calls `parse_goto`.
+
+Hex mode starts the text as `0x`, decimal mode empty. `parse_goto` reads `$`
+or `0x` before the digits, or `h` after them, as hexadecimal; anything else is
+decimal. Hex digits without one of those markers are not an offset, and
+neither is an empty entry. `parse_goto` returns CF for those, and the line
+stays open. Ten characters cannot overflow 64 bits in either radix.
+
+A target already in the view only moves the cursor. Any other target goes
+through `nav_request NAV_GOTO`, with the target's row centred. `goto_target`
+and `goto_pending` carry the byte to `nav_perform`, which puts the cursor on
+it once the view has loaded. The pending-changes prompt's cancel clears
+`goto_pending`.
+
+An Escape release closes the line and clears `last_up_vk`, so the same
+release is not the first half of `Esc Esc`. While the line is open,
+`frame_end` parks the caret after its text.
+
+`data_forms.asm` builds its row labels from tables. Each emitter is a
+`rep movsb` from a `BLOCK CONST.4` table, indexed by R10D. The table is laid
+out as the panel shows it, one `db` per screen row:
+
+```asm
+BLOCK CONST.4
+	.table	db 'f16 │ u8  │ s8  '
+		db 'f32 │ u16 │ s16 '
+		db 'f64 │ u32 │ s32 '
+		db 'f80 │ u64 │ s64 '
+	label_rows .table, .bytes, .columns
+END BLOCK
+```
+
+`label_rows` reads the rows back and defines two constants:
+- `.bytes`, the row length in bytes;
+- `.columns`, the columns a row takes on screen. A UTF-8 sequence is one
+  column, so `│` is three bytes in one.
+
+Every row must take the same columns, or the assembly fails. The pages align
+the values with `.columns` directly; no width is written by hand. An index
+scaled by 1, 2, 4 or 8 bytes fits an addressing mode
+(`lea esi,[.table + r10*.bytes]`); other lengths use `imul`/`add`. The image
+addresses are 32-bit in either case. The message texts are similar: each has
+`name.bytes` beside it.
 
 The alternate screen is removed on exit, so `vt_summary` writes one persistent
 line to the restored main screen describing bytes written and any pending bytes
@@ -225,9 +310,24 @@ CSI 8 ; rows ; cols t
 
 `SetConsoleWindowInfo` and `SetConsoleScreenBufferSize` remain as the legacy
 fallback. Under ConPTY they affect the pseudoconsole buffer, not the terminal's
-own window. `GetConsoleWindow` is not useful there either: it identifies a
-hidden zero-sized `PseudoConsoleWindow`, so adding a user32 dependency would not
-provide a working resize path.
+own window. `GetConsoleWindow` does not resize it either: it identifies a hidden
+`PseudoConsoleWindow`.
+
+That stand-in is owned by the terminal's real window, though
+(`CASCADIA_HOSTING_WINDOW_CLASS`), so `GetAncestor(…, GA_ROOTOWNER)` reaches the
+window to place; under conhost the console window is its own root.
+`place_window` uses it to centre a console that this process owns
+(`GetConsoleProcessList` = 1) on the mouse pointer, within that monitor's work
+area. This is the one user32 dependency.
+
+The move runs at startup, before the width is taken. Both hosts apply a resize
+asynchronously and finish it from the position they held when it began, so a
+`SetWindowPos` made between the request and its completion succeeds and is
+then undone. That was measured: the call returned TRUE, and the window stayed
+at the system's cascade position. Both hosts keep the top-left corner when
+the width changes. So the window is centred at the width it is about to have,
+its current pixel width scaled from the captured columns to `LAYOUT_COLS`. The
+result lands within about 10 pixels of the pointer under both hosts.
 
 If a host declines the requested width, it is asked only once to avoid an event
 loop in which the host and application repeatedly reassert different sizes. A
@@ -250,33 +350,45 @@ placement.
 
 ## PE and NEWCOFF policy
 
-### Release-oriented PE header
+### Low fixed-base PE header
 
-The emitted linker response selects:
+`program CONSOLE,mainCRTStartup` and `response` in `hexed.asm` write:
 
 ```text
 /NODEFAULTLIB
-/DYNAMICBASE
+/BASE:0x10000
+/DYNAMICBASE:NO
 /SUBSYSTEM:CONSOLE,10.0
-kernel32.lib
+/ENTRY:mainCRTStartup
+/DEBUG:FULL
+/INCREMENTAL:NO
+hexed.obj
+kernel32.lib  user32.lib  view.obj  paint.obj  data_forms.obj
+/RELEASE
+/VERSION:<time-based>
 ```
 
-The linked image uses the default x64 image base and carries `DYNAMIC_BASE`,
-`HIGH_ENTROPY_VA`, and `NX_COMPAT`.
+The image loads at `10000h` with relocations stripped, so every image address
+is a 32-bit value and can be an immediate or a displacement on its own
+(`mov esi,label`, `[table + rax*8]`). It keeps `NX_COMPAT`. It has no
+`DYNAMIC_BASE`: that is the memory model.
 
 Subsystem 10.0 normal launch requires a valid Load Configuration Directory.
-Without it, Windows rejects the image with `0xC000007B` before reaching the entry
-point. `_load_config_used` supplies the 148-byte legacy prefix through
-`GuardFlags`, leaves unused pointers null, and sets
+Without it, Windows rejects the image with `0xC000007B` before reaching the
+entry point. `program` emits `_load_config_used`: the 148-byte legacy prefix
+through `GuardFlags`, unused pointers null, and
 `IMAGE_GUARD_SECURITY_COOKIE_UNUSED`. The linker publishes it as data-directory
 entry 10.
 
-This is the minimal normal-launch condition isolated by
-`C:\git\fasm2\examples\ss10`. Relocations and x64 unwind metadata do not
-substitute for load configuration metadata.
+`/DEBUG:FULL` and `/INCREMENTAL:NO` come from `NEWCOFF.DEBUG`: `program`
+writes them whenever it is set and nonzero. The objects' CodeView records
+(`.debug$S`) reach the PDB only through `/DEBUG`; without it the linker drops
+them. Unwind data (`.pdata`, `.xdata`) is part of the image either way.
+`/DEBUG` alone would also link incrementally.
 
 ### Uninitialized NEWCOFF data
 
+`anchor.inc` declares BSS this way, and nothing else here declares a section.
 The intended BSS declaration is:
 
 ```asm
@@ -298,15 +410,24 @@ without fault while global state contains object-header bytes instead of zeros.
 
 ### CALM interceptor ordering
 
-[`common/vt.g`](common/vt.g) installs a `calminstruction ?` catch-all for output
-fragment notation. It must be included after local `struct` declarations.
+[`vt.inc`](vt.inc) installs a `calminstruction ?` catch-all for output
+fragment notation. It must be included after local `struct` declarations, so
+each module includes `namespace.inc`, then its SDK headers, then `hexed.h`, then
+`vt.inc`.
 
 `struct` and `ends` move the `?` handler chain with `mvmacro` and `mvstruc`.
 Installing a catch-all across that shuffle can route field declarations through
-the wrong handler and define fields twice. Generated projection types are
-unaffected because they are declared before the catch-all exists.
+the wrong handler and define fields twice. The SDK's records
+are unaffected because each module's headers declare them before the catch-all
+exists.
 
 ## Verification record
+
+The port was run against the original build with the same harness: the same
+file, then first paint, hex entry, F4 data forms, Tab and character entry, F2
+write, PgDn, and Esc Esc. All seven screens matched character for character,
+the written files matched byte for byte, and both exited. The record below is
+the original's.
 
 The editor has been exercised in a live console by attaching a harness, feeding
 `INPUT_RECORD`s with `WriteConsoleInput`, and reading the result with
@@ -331,6 +452,24 @@ Verified behavior includes:
 - complete 76-column footer and distinct prompt attributes
 - persistent `written` and `unchanged` exit summaries
 - PE subsystem 10.0 normal launch with the load-config directory present
+
+Since the port, the same harness has verified the following.
+- **`F6` decimal offsets:** the ruler label and right-aligned addresses.
+- **Ten-digit offsets:** on a 1,000,000,016-byte file, the address column
+  shows the low nine digits and the footer field shows `999999568`.
+- **The footer field** follows the cursor in both modes.
+- **Ctrl+G accepts** `0x1F0`, `$22F` (past the end, so the last byte) and
+  `3Ah`.
+- **Ctrl+G editing:**
+  - the hex-mode prefill `0x`, removed with Backspace before `16` is typed;
+  - a lone `x` keeps the line open;
+  - `Esc` closes it without arming `Esc Esc`.
+- **Window placement** under both conhost and Windows Terminal.
+
+The default screens, written files and every data-forms page still match the
+original build. With the tables laid out by `label_rows`, and linked with
+`/DEBUG`, the data-forms pages are still identical, `n/a` included.
+`hexed.pdb` holds 1,222 line entries for `hexed.asm` and the 41 procs.
 
 The data-form renderer also has focused output-vector coverage for binary32
 pi, signed 8-/32-/64-bit minima, unsigned 64-bit maximum, and incomplete input.

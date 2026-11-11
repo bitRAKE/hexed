@@ -33,18 +33,35 @@
 ; for both startup and every later resize, and removes the usual startup
 ; special case entirely.
 
-define win32.select.types system_console,globalization
-define win32.select.downlevel kernel32
-
-include 'common/policy.g'
-include 'common/names.g'
+include 'namespace.inc'
+include 'psdk\shared\minwindef.inc'	; TRUE, FALSE
+include 'psdk\shared\windef.inc'	; POINT, RECT
+include 'psdk\um\winnt.inc'		; GENERIC_*, FILE_SHARE_*, FILE_ATTRIBUTE_*, MEM_*, PAGE_*
+include 'psdk\um\wincontypes.inc'	; INPUT_RECORD, its event types and key and mouse flags
+include 'psdk\um\consoleapi.inc'	; console modes, ReadConsoleInputW, SetConsoleCtrlHandler
+include 'psdk\um\consoleapi2.inc'	; CONSOLE_SCREEN_BUFFER_INFO, buffer and window sizing
+include 'psdk\um\consoleapi3.inc'	; GetConsoleWindow, GetConsoleProcessList
+include 'psdk\um\fileapi.inc'		; CreateFileA, GetFileSizeEx, OPEN_EXISTING, WriteFile
+include 'psdk\um\handleapi.inc'		; CloseHandle, INVALID_HANDLE_VALUE
+include 'psdk\um\memoryapi.inc'		; VirtualAlloc, VirtualFree
+include 'psdk\um\processenv.inc'	; GetCommandLineA, GetStdHandle
+include 'psdk\um\processthreadsapi.inc'	; ExitProcess
+include 'psdk\um\synchapi.inc'		; CreateEventW, SetEvent, WaitForMultipleObjects
+include 'psdk\um\WinNls.inc'		; CPINFOEXW, GetCPInfoExW, CP_UTF8, MB_*
+include 'psdk\um\stringapiset.inc'	; MultiByteToWideChar
+include 'psdk\um\WinBase.inc'		; STD_*_HANDLE, WAIT_OBJECT_0
+include 'psdk\um\WinUser.inc'		; VK_*, and placing the window
 include 'hexed.h'
-include 'common/vt.g'	; after the structures; see the note in policy.g
+include 'vt.inc'	; after the structures; see the note in namespace.inc
 
-; Exposed and linker-recognized interface.
+program CONSOLE,mainCRTStartup	; the entry, the load configuration, the response
+response 'kernel32.lib','user32.lib','view.obj','paint.obj','data_forms.obj','/RELEASE'
+repeat 1,T:__TIME__ shr 16,t:__TIME__ and 0xFFFF
+	response <'/VERSION:',`T,'.',`t>	; time based binary version
+end repeat
+
+; Exposed interface.
 public hex
-public mainCRTStartup
-public _load_config_used
 
 ; Application-thread register contract. mainCRTStartup never returns, every
 ; internal call runs on that one thread, and Win64 preserves these registers:
@@ -76,10 +93,11 @@ extrn paint_cells
 extrn paint_status
 extrn paint_pending
 
-□	hex	HexState
-□	irec	INPUT_RECORD
-□	io_count dd ?
-≡	codepage_favorites dd HEXED_CODEPAGES
+BSS.8	hex	HexState
+BSS.8	align 8		; an anchor group keeps its alignment, whatever HexState's size
+BSS.4	irec	INPUT_RECORD
+BSS.4	io_count dd ?
+CONST.4	codepage_favorites dd HEXED_CODEPAGES
 
 IREC_EVENT_TYPE		:= irec.EventType - irec
 IREC_KEY_DOWN		:= irec.Event.KeyEvent.bKeyDown - irec
@@ -95,7 +113,7 @@ IREC_MOUSE_FLAGS	:= irec.Event.MouseEvent.dwEventFlags - irec
 
 ; The console as it was found, captured before anything is changed and used to
 ; put the width back on the way out.
-□	saved	CONSOLE_SCREEN_BUFFER_INFO
+BSS.2	saved	CONSOLE_SCREEN_BUFFER_INFO
 
 
 ; Restoring the terminal on Ctrl+Break is what makes this a well-behaved
@@ -127,8 +145,8 @@ proc mainCRTStartup
 		nread	dd ?
 		fsize	dq ?
 	endl
-	lea	rbx, [hex]
-	lea	rbp, [irec]
+	mov	ebx, hex
+	mov	ebp, irec
 	mov	dword [rbx + HexState.result], 1
 	mov	dword [rbx + HexState.chg_lo], -1
 	mov	dword [rbx + HexState.chg_hi], -1
@@ -151,7 +169,7 @@ proc mainCRTStartup
 	jnz	.console_ok
 .not_a_console:
 .m_console GLOBSTR 'hexed: needs a console, not a redirected handle.',13,10,0
-	lea	rsi, [.m_console]
+	mov	esi, .m_console
 	call	die
 .console_ok:
 	mov	eax, [oldin]
@@ -174,7 +192,7 @@ proc mainCRTStartup
 	test	rax, rax
 	jnz	.have_name
 .m_usage GLOBSTR 'hexed <file>',13,10,0
-	lea	rsi, [.m_usage]
+	mov	esi, .m_usage
 	call	die
 .have_name:
 	mov	[rbx + HexState.name], rax
@@ -191,7 +209,7 @@ proc mainCRTStartup
 	cmp	rax, INVALID_HANDLE_VALUE
 	jnz	.opened_readonly
 .m_open GLOBSTR 'hexed: cannot open that file.',13,10,0
-	lea	rsi, [.m_open]
+	mov	esi, .m_open
 	call	die
 .opened_readonly:
 	mov	dword [rbx + HexState.readonly], 1
@@ -202,7 +220,7 @@ proc mainCRTStartup
 	test	eax, eax		; BOOL
 	jnz	.sized
 .m_size GLOBSTR 'hexed: cannot size that file.',13,10,0
-	lea	rsi, [.m_size]
+	mov	esi, .m_size
 	call	die
 .sized:
 	mov	rax, [fsize]
@@ -214,7 +232,7 @@ proc mainCRTStartup
 	shr	rcx, 32
 	jz	.fits
 .m_big GLOBSTR 'hexed: files of 4 GiB and over are not addressable here.',13,10,0
-	lea	rsi, [.m_big]
+	mov	esi, .m_big
 	call	die
 .fits:
 
@@ -225,7 +243,7 @@ proc mainCRTStartup
 	test	rax, rax
 	jnz	.have_arena
 .m_mem GLOBSTR 'hexed: out of memory.',13,10,0
-	lea	rsi, [.m_mem]
+	mov	esi, .m_mem
 	call	die
 .have_arena:
 	mov	[rbx + HexState.arena], rax
@@ -248,6 +266,7 @@ proc mainCRTStartup
 		or ENABLE_MOUSE_INPUT or ENABLE_WINDOW_INPUT
 	SetConsoleMode [rbx + HexState.hOutput], ENABLE_PROCESSED_OUTPUT\
 		or ENABLE_VIRTUAL_TERMINAL_PROCESSING
+	call	place_window		; before any resize: see place_window
 	call	vt_setup
 
 ;--------------------------------------------------------------------- the loop
@@ -310,6 +329,8 @@ proc mainCRTStartup
 	movzx	eax, word [rbp + IREC_KEY_VK]
 	cmp	eax, VK_ESCAPE
 	jnz	.remember
+	cmp	dword [rbx + HexState.goto], 0
+	jnz	.goto_close
 	cmp	dword [rbx + HexState.prompt], PROMPT_NAV
 	jz	.cancel
 	cmp	dword [rbx + HexState.panel], PANEL_NONE
@@ -329,9 +350,16 @@ proc mainCRTStartup
 	call	relayout
 	jmp	.safe_vt_flush
 
+.goto_close:
+	mov	dword [rbx + HexState.goto], 0
+	mov	dword [rbx + HexState.last_up_vk], 0	; not the first half of Esc Esc
+	call	paint_status
+	jmp	.safe_vt_flush
+
 .cancel:
 	mov	dword [rbx + HexState.prompt], PROMPT_NONE
 	mov	dword [rbx + HexState.pend_act], NAV_NONE
+	mov	dword [rbx + HexState.goto_pending], 0
 	mov	dword [rbx + HexState.last_up_vk], 0
 	mov	qword [rbx + HexState.msg], 0
 	call	paint_status
@@ -488,21 +516,23 @@ proc parse_command_line
 endp
 
 
+; {fix} just return the Z-flag
 ; ECX = code-page identifier -> EAX nonzero only for an available SBCS.
 proc codepage_is_sbcs
 	locals
 		info	CPINFOEXW
 	endl
 	GetCPInfoExW ecx, 0, &info
-	test	eax, eax
-	jz	.done
-	xor	eax, eax
-	cmp	dword [info + CPINFOEXW.MaxCharSize], 1
-	sete	al
+	test eax, eax
+	jz .done
+	xor eax, eax
+	cmp dword [info + CPINFOEXW.MaxCharSize], 1
+	setz al
 .done:	ret
 endp
 
 
+; {fix} why doens't it use `HexState.codepage_count` and really append?
 ; ECX = candidate, EDX = number already in HexState.codepages.
 ; EAX = one when appended, zero when invalid, multibyte or duplicate.
 proc append_codepage
@@ -580,34 +610,28 @@ proc init_codepages
 	locals
 		call_align	dq ?
 	endl
-	xor	edi, edi
 
-	mov	ecx, [rbx + HexState.oldOutCP]
-	mov	edx, edi
-	call	append_codepage
-	add	edi, eax
+	fastcall append_codepage, [rbx + HexState.oldOutCP], 0
+	mov edi, eax
 
-	lea	rsi, [codepage_favorites]
+	mov esi, codepage_favorites
 	repeat HEXED_CODEPAGE_FAVORITES
 		lodsd
-		mov	ecx, eax
-		mov	edx, edi
-		call	append_codepage
-		add	edi, eax
+		fastcall append_codepage, eax, edi
+		add edi, eax
 	end repeat
 
 	; HEXED_CODEPAGES always supplies a valid fallback in the shipped build.
 	; Keep a defensive CP437 fallback so a locally edited list cannot leave
 	; the renderer without a mapping.
-	test	edi, edi
-	jnz	.ready
-	mov	dword [rbx + HexState.codepages], 437
-	mov	edi, 1
+	test edi, edi
+	jnz .ready
+	mov dword [rbx + HexState.codepages], 437
+	mov edi, 1
 .ready:
-	mov	[rbx + HexState.codepage_count], edi
-	mov	dword [rbx + HexState.charset], 0
-	mov	ecx, [rbx + HexState.codepages]
-	call	select_codepage
+	mov [rbx + HexState.codepage_count], edi
+	mov dword [rbx + HexState.charset], 0
+	fastcall select_codepage, [rbx + HexState.codepages]
 	ret
 endp
 
@@ -708,7 +732,7 @@ proc arena_fit
 	div	rcx
 	mov	[rbx + HexState.viewrows], eax
 .m_room GLOBSTR 'out of memory: view shortened',0
-	lea	rax, [.m_room]
+	mov	eax, .m_room
 	mov	[rbx + HexState.msg], rax
 	jmp	.carve
 endp
@@ -859,6 +883,93 @@ proc on_resize
 .width_settled:
 	call	relayout
 	ret
+endp
+
+
+; A console created for this program opens wherever the system puts new
+; windows, which can be another monitor than the one the user is working on.
+; Centre it on the mouse pointer instead, inside that monitor's work area.
+;
+; Only a console this process owns is moved: one shared with a shell belongs
+; to the shell. The window to move is the console window's root owner. Under
+; ConPTY, GetConsoleWindow names a hidden PseudoConsoleWindow, and Windows
+; Terminal owns it with its own window; conhost's window has no owner, so it is
+; its own root.
+;
+; This runs at startup, before the width is taken. Both hosts apply a resize
+; asynchronously and finish it from the position they had when it began, so a
+; move made during one is undone. Both keep the top-left corner when the width
+; changes, though, so the window is centred now at the width it is about to
+; have: its width scaled from the current columns to LAYOUT_COLS.
+proc place_window
+	locals
+		pids	rd 2
+		pointer	POINT
+		window	RECT
+		screen	MONITORINFO
+	endl
+	GetConsoleProcessList &pids, 2
+	cmp	eax, 1
+	jnz	.done			; the console was here before this process
+	GetConsoleWindow
+	test	rax, rax
+	jz	.done
+	GetAncestor rax, GA_ROOTOWNER
+	test	rax, rax
+	jz	.done
+	mov	rsi, rax		; RSI is the thread's own scratch
+	IsWindowVisible rsi
+	test	eax, eax
+	jz	.done
+	GetCursorPos &pointer
+	MonitorFromPoint [pointer], MONITOR_DEFAULTTONEAREST	; POINT by value
+	mov	[screen.cbSize], sizeof.MONITORINFO
+	GetMonitorInfoW rax, &screen
+	test	eax, eax
+	jz	.done
+	GetWindowRect rsi, &window
+	test	eax, eax
+	jz	.done
+
+	; the width at LAYOUT_COLS columns, from the columns captured in `saved`
+	movsx	r8d, word [saved.srWindow.Right]
+	movsx	eax, word [saved.srWindow.Left]
+	sub	r8d, eax
+	inc	r8d
+	mov	eax, [window.right]
+	sub	eax, [window.left]
+	imul	eax, LAYOUT_COLS
+	xor	edx, edx
+	div	r8d
+	mov	ecx, eax
+
+	; x = pointer.x - width/2, clamped to [rcWork.left, rcWork.right - width]
+	mov	r10d, ecx
+	shr	r10d, 1
+	neg	r10d
+	add	r10d, [pointer.x]
+	mov	eax, [screen.rcWork.right]
+	sub	eax, ecx
+	cmp	r10d, eax
+	cmovg	r10d, eax
+	cmp	r10d, [screen.rcWork.left]
+	cmovl	r10d, [screen.rcWork.left]
+	; y likewise, from the height and the work area's top and bottom
+	mov	ecx, [window.bottom]
+	sub	ecx, [window.top]
+	mov	r11d, ecx
+	shr	r11d, 1
+	neg	r11d
+	add	r11d, [pointer.y]
+	mov	eax, [screen.rcWork.bottom]
+	sub	eax, ecx
+	cmp	r11d, eax
+	cmovg	r11d, eax
+	cmp	r11d, [screen.rcWork.top]
+	cmovl	r11d, [screen.rcWork.top]
+
+	SetWindowPos rsi, 0, r10d, r11d, 0, 0, SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE
+.done:	ret
 endp
 
 
@@ -1154,9 +1265,17 @@ proc nav_perform
 	jz	.retain_goto
 	mov	[rbx + HexState.view_off], rax
 	call	view_load
-	jmp	.repaint
+	jmp	.goto_cursor
 .retain_goto:
 	call	view_retain
+.goto_cursor:
+	cmp	dword [rbx + HexState.goto_pending], 0
+	jz	.repaint
+	mov	dword [rbx + HexState.goto_pending], 0
+	mov	rax, [rbx + HexState.goto_target]	; Ctrl+G: onto the byte asked for
+	sub	rax, [rbx + HexState.view_off]
+	mov	[rbx + HexState.cur], eax
+	mov	dword [rbx + HexState.nibble], 0
 	jmp	.repaint
 
 .resize:
@@ -1186,21 +1305,29 @@ proc on_key_down
 	mov	[oldcur], eax
 
 	movzx	eax, word [rbp + IREC_KEY_VK]
-	iterate <vk,handler>,\
-		VK_LEFT,	.left,\
+	cmp	dword [rbx + HexState.goto], 0
+	jnz	.goto_key		; the entry line takes every key while open
+	cmp	eax, 'G'
+	jnz	.dispatch
+	test	dword [rbp + IREC_KEY_CONTROL], LEFT_CTRL_PRESSED or RIGHT_CTRL_PRESSED
+	jnz	.goto_open
+.dispatch:
+	iterate <vk,		handler>,\
+		VK_LEFT,		.left,\
 		VK_RIGHT,	.right,\
 		VK_UP,		.up,\
-		VK_DOWN,	.down,\
+		VK_DOWN,		.down,\
 		VK_PRIOR,	.page_up,\
-		VK_NEXT,	.page_down,\
-		VK_HOME,	.home,\
+		VK_NEXT,		.page_down,\
+		VK_HOME,		.home,\
 		VK_END,		.end,\
 		VK_TAB,		.pane,\
 		VK_F1,		.help,\
 		VK_F2,		.write,\
 		VK_F3,		.charset,\
 		VK_F4,		.forms,\
-		VK_F5,		.restore
+		VK_F5,		.restore,\
+		VK_F6,		.offsets
 
 		cmp	eax, vk
 		jz	handler
@@ -1300,6 +1427,88 @@ proc on_key_down
 .nothing:
 	ret
 
+;   Ctrl+G: the footer's offset field becomes an entry line. In hex mode it
+;   starts as `0x`, saying what is expected, and Backspace can take that away;
+;   in decimal mode it starts empty. Either way `$` or `0x` before the digits,
+;   or `h` after them, makes them hexadecimal. Enter goes, Esc (on release,
+;   as everywhere) closes it.
+.goto_open:
+	mov	dword [rbx + HexState.goto], 1
+	mov	dword [rbx + HexState.goto_len], 0
+	cmp	dword [rbx + HexState.offsets], OFFSETS_HEX
+	jnz	.goto_shown
+	mov	word [rbx + HexState.goto_text], '0x'
+	mov	dword [rbx + HexState.goto_len], 2
+.goto_shown:
+	call	paint_status
+	ret
+
+.goto_key:
+	cmp	eax, VK_RETURN
+	jz	.goto_commit
+	cmp	eax, VK_BACK
+	jnz	.goto_char
+	cmp	dword [rbx + HexState.goto_len], 0
+	jz	.nothing
+	dec	dword [rbx + HexState.goto_len]
+	jmp	.goto_shown
+.goto_char:
+	movzx	eax, word [rbp + IREC_KEY_CHAR]
+	mov	ecx, eax
+	or	ecx, 20h		; letters to lower case; digits keep their value
+	cmp	eax, '$'
+	jz	.goto_append
+	sub	ecx, '0'
+	cmp	ecx, 10
+	jb	.goto_append
+	sub	ecx, 'a' - '0'
+	cmp	ecx, 6
+	jb	.goto_append
+	cmp	ecx, 'h' - 'a'
+	jz	.goto_append
+	cmp	ecx, 'x' - 'a'
+	jnz	.nothing
+.goto_append:
+	mov	ecx, [rbx + HexState.goto_len]
+	cmp	ecx, GOTO_CHARS
+	jnc	.nothing
+	mov	[rbx + HexState.goto_text + rcx], al
+	inc	dword [rbx + HexState.goto_len]
+	jmp	.goto_shown
+
+.goto_commit:
+	call	parse_goto
+	jc	.nothing		; not an offset yet: the line stays open
+	mov	dword [rbx + HexState.goto], 0
+	mov	rcx, [rbx + HexState.file_size]
+	test	rcx, rcx
+	jz	.goto_shown
+	cmp	rax, rcx
+	jc	.goto_inside
+	lea	rax, [rcx - 1]		; past the end: the last byte
+.goto_inside:
+	mov	rcx, rax
+	sub	rcx, [rbx + HexState.view_off]
+	jc	.goto_away
+	cmp	ecx, [rbx + HexState.view_bytes]
+	jnc	.goto_away
+	mov	eax, ecx		; already on screen: only the cursor moves
+	jmp	.set_cursor
+.goto_away:
+	; The target's row in the middle of the view; nav_request clamps it and
+	; nav_perform puts the cursor on the target once the view has loaded.
+	mov	[rbx + HexState.goto_target], rax
+	mov	dword [rbx + HexState.goto_pending], 1
+	mov	rdx, rax
+	and	rdx, -BPR
+	mov	eax, [rbx + HexState.viewrows]
+	shr	eax, 1
+	shl	rax, 4
+	sub	rdx, rax
+	mov	ecx, NAV_GOTO
+	call	nav_request
+	ret
+
 ;   Pane and file commands.
 .help:
 	mov	ecx, PANEL_HELP
@@ -1363,6 +1572,12 @@ proc on_key_down
 	mov	[rbx + HexState.charset], eax
 	mov	ecx, [rbx + HexState.codepages + rax*4]
 	call	select_codepage
+	call	paint_full
+	ret
+
+;   Every row carries an address, so the address radix repaints them all.
+.offsets:
+	xor	dword [rbx + HexState.offsets], OFFSETS_HEX xor OFFSETS_DEC
 	call	paint_full
 	ret
 
@@ -1457,7 +1672,7 @@ proc on_key_down
 
 .refuse:
 .m_ro GLOBSTR 'read-only',0
-	lea	rax, [.m_ro]
+	mov	eax, .m_ro
 	mov	[rbx + HexState.msg], rax
 	call	paint_status
 	ret
@@ -1483,6 +1698,75 @@ hex_value:
 	clc
 	retn
 .no:	stc
+	retn
+
+
+; The Ctrl+G entry line -> RAX = the offset, or CF when it is not one yet:
+; empty, a stray `$`, `x` or `h`, or a letter without a hexadecimal marker.
+; `$` or `0x` before the digits, or `h` after them, mark hexadecimal; without
+; one the digits are decimal.
+parse_goto:
+	lea	rsi, [rbx + HexState.goto_text]
+	mov	ecx, [rbx + HexState.goto_len]
+	xor	r8d, r8d		; radix: 0 decimal, 1 hexadecimal
+	test	ecx, ecx
+	jz	.bad
+	cmp	byte [rsi], '$'
+	jnz	.prefix_0x
+	inc	rsi
+	dec	ecx
+	inc	r8d
+	jmp	.suffix
+.prefix_0x:
+	cmp	ecx, 2
+	jc	.suffix
+	cmp	byte [rsi], '0'
+	jnz	.suffix
+	mov	al, [rsi + 1]
+	or	al, 20h
+	cmp	al, 'x'
+	jnz	.suffix
+	add	rsi, 2
+	sub	ecx, 2
+	mov	r8d, 1
+.suffix:
+	test	ecx, ecx
+	jz	.bad
+	mov	al, [rsi + rcx - 1]
+	or	al, 20h
+	cmp	al, 'h'
+	jnz	.digits
+	dec	ecx
+	mov	r8d, 1
+.digits:
+	test	ecx, ecx
+	jz	.bad
+	xor	eax, eax
+.next:	movzx	edx, byte [rsi]
+	inc	rsi
+	or	edx, 20h		; letters to lower case; digits keep their value
+	sub	edx, '0'
+	cmp	edx, 10
+	jc	.have
+	sub	edx, 'a' - '0' - 10
+	cmp	edx, 10
+	jc	.bad
+	cmp	edx, 16
+	jnc	.bad
+	test	r8d, r8d
+	jz	.bad			; a hexadecimal digit needs the marker
+.have:	test	r8d, r8d
+	jz	.decimal
+	shl	rax, 4
+	jmp	.add
+.decimal:
+	imul	rax, rax, 10
+.add:	add	rax, rdx
+	dec	ecx
+	jnz	.next
+	clc
+	retn
+.bad:	stc
 	retn
 
 
@@ -1607,61 +1891,3 @@ proc on_click
 	call	paint_cells
 .done:	ret
 endp
-
-
-;------------------------------------------------------------------------------
-; Subsystem 10.0 takes the modern normal-launch path through the loader, which
-; requires a valid Load Configuration Directory. There is no stack cookie or
-; CFG instrumentation in this no-CRT image, so the legacy prefix through
-; GuardFlags is the complete truthful structure and says the cookie is unused.
-
-IMAGE_GUARD_SECURITY_COOKIE_UNUSED := 00000800h
-
-section '.rdata$loadcfg' data readable align 8
-
-_load_config_used:
-	dd	.end - _load_config_used	; Size
-	dd	0				; TimeDateStamp
-	dw	0,0				; MajorVersion, MinorVersion
-	dd	0				; GlobalFlagsClear
-	dd	0				; GlobalFlagsSet
-	dd	0				; CriticalSectionDefaultTimeout
-	dq	0				; DeCommitFreeBlockThreshold
-	dq	0				; DeCommitTotalFreeThreshold
-	dq	0				; LockPrefixTable
-	dq	0				; MaximumAllocationSize
-	dq	0				; VirtualMemoryThreshold
-	dq	0				; ProcessAffinityMask
-	dd	0				; ProcessHeapFlags
-	dw	0				; CSDVersion
-	dw	0				; DependentLoadFlags
-	dq	0				; EditList
-	dq	0				; SecurityCookie VA
-	dq	0				; SEHandlerTable
-	dq	0				; SEHandlerCount
-	dq	0				; GuardCFCheckFunctionPointer
-	dq	0				; GuardCFDispatchFunctionPointer
-	dq	0				; GuardCFFunctionTable
-	dq	0				; GuardCFFunctionCount
-	dd	IMAGE_GUARD_SECURITY_COOKIE_UNUSED
-.end:
-	assert	.end - _load_config_used = 148
-
-
-; The linker options travel with the code that depends on them. Object files
-; stay in the makefile: build dependencies belong there.
-
-virtual as "response"
-	db '/NOLOGO',10
-	db '/NODEFAULTLIB',10
-
-; Create unique binary using image version and checksum:
-	db '/RELEASE',10		; set program checksum in header
-repeat 1,T:__TIME__ shr 16,t:__TIME__ and 0xFFFF
-	db '/VERSION:',`T,'.',`t,10	; time based binary version
-end repeat
-
-	db '/DYNAMICBASE',10
-	db '/SUBSYSTEM:CONSOLE,10.0',10
-	db 'kernel32.lib',10
-end virtual

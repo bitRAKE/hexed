@@ -42,13 +42,10 @@
 ; writing a completed frame. The emit_* leaves take no frame: they make no
 ; calls and cannot fault, so there is nothing for an unwinder to describe.
 
-define win32.select.types system_console
-define win32.select.downlevel kernel32
-
-include 'common/policy.g'
-include 'common/names.g'
+include 'namespace.inc'
+include 'psdk\um\fileapi.inc'		; WriteFile
 include 'hexed.h'
-include 'common/vt.g'	; after the structures; see the note in policy.g
+include 'vt.inc'	; after the structures; see the note in namespace.inc
 
 extrn forms_render
 
@@ -69,7 +66,7 @@ public paint_pending
 ; of registers already owned by the program. RBX is inherited from the entry
 ; thread rather than loaded through an external `hex` reference.
 
-□	io_count	dd ?
+BSS.4	io_count	dd ?
 
 
 ; Title, then the alternate screen buffer, so the shell's scrollback is left
@@ -387,6 +384,8 @@ frame_end:
 	call	emit_attr
 	cmp	dword [rbx + HexState.prompt], PROMPT_NONE
 	jnz	.prompt			; the prompt line already left it there
+	cmp	dword [rbx + HexState.goto], 0
+	jnz	.entry
 	mov	r11d, [rbx + HexState.cur]
 	mov	r10d, r11d
 	and	r10d, BPR-1
@@ -400,6 +399,10 @@ frame_end:
 	add	edx, [rbx + HexState.nibble]
 	jmp	.place
 .ascii:	lea	edx, [r10 + ASCII_COL0]
+	jmp	.place
+.entry:	call	status_row		; the caret follows what has been typed
+	mov	edx, [rbx + HexState.goto_len]
+	add	edx, FIELD_COL0 + 1
 .place:	call	emit_cup
 .prompt:
 	<| 27,'[?25h' |>
@@ -434,7 +437,72 @@ render_header:
 	; The ruler's F occupies column 76. EL after writing it erases that same
 	; cell while the terminal is in delayed-wrap state. Clear first; the CUP for
 	; the first data row then cancels delayed wrap without touching the F.
-	<| 27,'[2K','  offset  00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  0123456789ABCDEF' |>
+	<| 27,'[2K' |>
+	cmp	dword [rbx + HexState.offsets], OFFSETS_DEC
+	jz	.decimal
+	<| '  offset' |>
+	jmp	.columns
+.decimal:
+	<| ' decimal' |>
+.columns:
+	<| '  00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  0123456789ABCDEF' |>
+	retn
+
+
+; EAX = file offset -> the address column and its gap, ten columns in all:
+; eight hex digits and two spaces, or decimal right-aligned in nine columns and
+; one space. An offset of ten decimal digits keeps its low nine: the footer
+; shows the whole offset of the byte under the cursor.
+; Clobbers RCX, RDX, R8, R9 and R11, which render_row loads only afterwards.
+emit_offset:
+	cmp	dword [rbx + HexState.offsets], OFFSETS_DEC
+	jz	.decimal
+	mov	ecx, 8
+	call	emit_u32
+	mov	ax, '  '
+	stosw
+	retn
+.decimal:
+	mov	ecx, 9
+	call	emit_dec_field
+	mov	al, ' '
+	stosb
+	retn
+
+
+; EAX = value, ECX = columns -> decimal right-aligned in that many columns,
+; the high digits dropped when it has more. Clobbers RDX, R8, R9 and R11.
+emit_dec_field:
+	lea	r9, [rdi + rcx]		; one past the field
+	mov	rdi, r9
+	mov	r11d, 10
+.digit:	xor	edx, edx
+	div	r11d
+	add	dl, '0'
+	dec	rdi
+	mov	[rdi], dl
+	dec	ecx
+	jz	.done			; truncated, or exactly full
+	test	eax, eax
+	jnz	.digit
+.blank:	dec	rdi
+	mov	byte [rdi], ' '
+	dec	ecx
+	jnz	.blank
+.done:	mov	rdi, r9
+	retn
+
+
+; -> EAX = the screen row of the footer: the last line, or above an open panel.
+status_row:
+	mov	eax, [rbx + HexState.lines]
+	cmp	dword [rbx + HexState.panel], PANEL_NONE
+	jz	.positioned
+	cmp	eax, MIN_LINES + HELP_ROWS
+	jl	.positioned		; a resize may have made the open panel not fit
+	sub	eax, HELP_ROWS
+.positioned:
+	add	eax, [rbx + HexState.row0]
 	retn
 
 
@@ -451,12 +519,10 @@ render_row:
 	mov	eax, r10d
 	shl	eax, 4
 	add	eax, dword [rbx + HexState.view_off]
-	mov	ecx, 8
-	call	emit_u32
+	call	emit_offset		; ten columns, the gap included
 
 	mov	eax, ATTR_NORM
 	call	emit_attr
-	<| '  ' |>
 
 	mov	r11d, r10d
 	shl	r11d, 4
@@ -801,14 +867,7 @@ emit_dec:
 ; share, and should not look like the thing it replaces.
 
 render_status:
-	mov	eax, [rbx + HexState.lines]
-	cmp	dword [rbx + HexState.panel], PANEL_NONE
-	jz	.positioned
-	cmp	eax, MIN_LINES + HELP_ROWS
-	jl	.positioned		; a resize may have made the open panel not fit
-	sub	eax, HELP_ROWS
-.positioned:
-	add	eax, [rbx + HexState.row0]
+	call	status_row
 	mov	edx, 1
 	call	emit_cup
 	cmp	dword [rbx + HexState.prompt], PROMPT_NONE
@@ -856,6 +915,20 @@ render_status:
 	call	emit_dec
 	<| '   Tab pane   F1 help' |>
 
+	; The offset field holds the bar's last twelve layout columns; the text
+	; before it is padded or clipped to meet it. A window narrower than the
+	; layout has no room for it and is reported as too small anyway.
+	cmp	dword [rbx + HexState.cols], LAYOUT_COLS
+	jc	.eol
+	mov	ecx, FIELD_COL0 - 1
+	call	bar_fill
+	call	render_field
+	mov	ecx, [rbx + HexState.cols]	; a wider window: the bar to its edge
+	sub	ecx, LAYOUT_COLS
+	mov	al, ' '
+	rep	stosb
+	jmp	.done
+
 ; Pad or clip to the window edge.
 ;
 ; ESC[K is not enough. It erases with the current background colour, and
@@ -892,6 +965,65 @@ render_status:
 	jmp	.eol
 
 
+; R9 = where the bar's text began, ECX = columns it may take -> padded with
+; spaces to exactly that, or clipped. No escape sequence has been written since
+; R9, so bytes are columns.
+bar_fill:
+	mov	rax, rdi
+	sub	rax, r9
+	cmp	eax, ecx
+	jnc	.clip
+	sub	ecx, eax
+	mov	al, ' '
+	rep	stosb
+	retn
+.clip:	lea	rdi, [r9 + rcx]
+	retn
+
+
+; The offset field: twelve columns, a space either side of ten characters.
+; It shows the offset of the byte under the cursor in the radix F6 selects,
+; `0x` and eight digits or up to ten decimal digits; while Ctrl+G is open it is
+; the entry line instead, in the prompt's colours.
+render_field:
+	mov	al, ' '
+	stosb
+	cmp	dword [rbx + HexState.goto], 0
+	jnz	.entry
+	mov	eax, [rbx + HexState.cur]
+	add	eax, dword [rbx + HexState.view_off]	; a file is under 4 GiB
+	cmp	dword [rbx + HexState.offsets], OFFSETS_DEC
+	jz	.decimal
+	mov	r8d, eax
+	<| '0x' |>
+	mov	eax, r8d
+	mov	ecx, 8
+	call	emit_u32
+	jmp	.close
+.decimal:
+	mov	ecx, GOTO_CHARS
+	call	emit_dec_field
+.close:	mov	al, ' '
+	stosb
+	retn
+.entry:
+	mov	eax, ATTR_PROMPT
+	call	emit_attr
+	lea	rsi, [rbx + HexState.goto_text]
+	mov	ecx, [rbx + HexState.goto_len]
+	mov	edx, GOTO_CHARS
+	sub	edx, ecx
+	rep	movsb
+	mov	ecx, edx
+	mov	al, ' '
+	rep	stosb
+	mov	eax, ATTR_BAR
+	call	emit_attr
+	mov	al, ' '
+	stosb
+	retn
+
+
 ; Four persistent lines below the raised status bar. Help is rendered here;
 ; data forms live in their own object and share the same positioned surface.
 render_panel:
@@ -917,10 +1049,10 @@ render_panel:
 	cmp	r10d, 3
 	jz	.page3
 .page1:
-	<| 'F2 write   F5 restore             F4 data forms',27,'[K',\
+	<| 'F2 write   F5 restore   F6 offsets hex/decimal   F4 data forms',27,'[K',\
 		27,'[1B',13,'F3 next code page                 Tab switch hex/character pane',27,'[K',\
 		27,'[1B',13,'Arrows move; Up/Down scroll       PgUp/PgDn move one screen',27,'[K',\
-		27,'[1B',13,'Home/End row  Ctrl+Home/End file  Esc close panel',27,'[K' |>
+		27,'[1B',13,'Home/End row  Ctrl+Home/End file  Ctrl+G go to offset  Esc close panel',27,'[K' |>
 	retn
 .page2:
 	<| 'Hex pane: 0-9 A-F enter nibbles    Character pane: printable ASCII',27,'[K',\

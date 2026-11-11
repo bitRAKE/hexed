@@ -10,7 +10,7 @@
 ;
 ; appends a constant fragment at RDI, the frame-buffer write pointer:
 ;
-;       lea rsi, [fragment]
+;       mov esi, fragment	; a 32-bit image address: the low fixed base
 ;       mov ecx, sizeof fragment
 ;       rep movsb
 ;
@@ -39,7 +39,7 @@ calminstruction ? line&
 	compute i, i + 1
 	arrange line, var =GLOBSTR line
 	assemble line
-	arrange line, =lea =rsi, [var]
+	arrange line, =mov =esi, var
 	assemble line
 	arrange line, =mov =ecx, =sizeof var
 	assemble line

@@ -95,6 +95,18 @@ PANEL_NONE	:= 0
 PANEL_HELP	:= 1
 PANEL_FORMS	:= 2
 
+; The address column: eight hex digits, or decimal right-aligned in nine
+; columns, an offset of ten digits keeping its low nine. Either way it fills
+; the ten columns before HEX_COL0.
+OFFSETS_HEX	:= 0
+OFFSETS_DEC	:= 1
+
+; The footer's last twelve layout columns: the offset of the byte under the
+; cursor, in full, or the Ctrl+G entry line. A space either side of ten
+; characters: `0x` and eight hex digits, or up to ten decimal digits.
+GOTO_CHARS	:= 10
+FIELD_COL0	:= LAYOUT_COLS - GOTO_CHARS - 1	; the field's leading space
+
 ; Single-byte code pages for the right-hand pane. The console output code page
 ; captured at startup is prepended when it is an SBCS; F3 then cycles that page
 ; and these baked-in favorites, skipping duplicates and unsupported entries.
@@ -155,6 +167,7 @@ struct HexState
 	?written	dq ?	; bytes committed this session, for the exit line
 	?name		dq ?	; -> file name, into the process command line
 	?msg		dq ?	; -> transient status note, 0 = none
+	?goto_target	dq ?	; Ctrl+G: the file offset the cursor goes to
 
 	?view_bytes	dd ?	; valid bytes in view; short at end of file
 	?view_cap	dd ?	; viewrows * BPR
@@ -174,6 +187,10 @@ struct HexState
 	?chg_lo		dd ?	; lowest changed index, -1 when clean
 	?chg_hi		dd ?	; highest changed index, inclusive
 	?readonly	dd ?
+	?offsets	dd ?	; OFFSETS_*, F6 toggles
+	?goto		dd ?	; the footer field is the Ctrl+G entry line
+	?goto_pending	dd ?	; goto_target waits for its view to load
+	?goto_len	dd ?	; characters in goto_text
 	?toosmall	dd ?	; the window could not be made to fit
 	?fix_cols	dd ?	; width already attempted; a terminal that will
 				; not take LAYOUT_COLS must not be asked twice
@@ -189,6 +206,7 @@ struct HexState
 	?codepages	dd HEXED_CODEPAGE_CAPACITY dup ?
 	?glyphs		dw 256 dup ?	; byte -> BMP code point; FFFF = invalid
 	?form_text	db 96 dup ?	; one formatted data-form value
+	?goto_text	db GOTO_CHARS dup ?
 ends
 
 assert HexState.hQuit = 8 + HexState.hInput

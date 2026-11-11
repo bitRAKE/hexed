@@ -73,6 +73,8 @@ pending in-memory changes, restore the terminal, and report the discard on exit.
 | printable ASCII | enter a byte in the character pane |
 | `F2` | write pending changes |
 | `F5` | restore the loaded snapshot for this view |
+| `F6` | show offsets in hexadecimal or decimal |
+| `Ctrl+G` | go to an offset, typed in the footer's offset field |
 | mouse wheel | scroll three rows |
 | left click | place the cursor |
 | `Esc` | close an open help/data panel, or cancel a navigation prompt |
@@ -91,6 +93,15 @@ their character interpretation:
 00000000  48 69 21 0A FF                                    Hi!..
 ```
 
+`F6` shows the offsets in decimal, right-aligned in nine columns, and the
+ruler says so. An offset of ten digits keeps its low nine there; the footer
+has all of it.
+
+```text
+ decimal  00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  0123456789ABCDEF
+      240 F0 F1 F2 F3 F4 F5 F6 F7  F8 F9 FA FB FC FD FE FF  ≡±≥≤⌠⌡÷≈°∙·√ⁿ²■
+```
+
 Changed bytes are highlighted. The real terminal caret is placed on the nibble
 or character that will receive the next keystroke.
 
@@ -101,6 +112,19 @@ The compact footer contains only:
 - active code page, such as `cp437`
 - `Tab pane`
 - `F1 help`
+- at its right end, the offset of the byte under the cursor: `0x` and eight hex
+  digits, or decimal after `F6`. This field always shows the whole offset,
+  whatever the address column has room for.
+
+`Ctrl+G` turns that field into an entry line:
+- In hex mode it starts as `0x`, saying hexadecimal is expected; Backspace
+  removes it.
+- In decimal mode it starts empty.
+- Either way, `$` or `0x` before the digits, or `h` after them, makes them
+  hexadecimal: `0x1F0`, `$1F0`, `1F0h` and `496` all go to the same byte.
+- `Enter` goes there. An offset past the end goes to the last byte.
+- `Esc` closes the line without moving.
+- Text that is not an offset yet, such as a lone `x`, leaves it open.
 
 F1 moves the footer four rows higher and displays four lines of help beneath
 it. The help remains visible while editing. Each additional F1 press advances
@@ -162,6 +186,11 @@ If the console host refuses resizing, a wider window is used from its left edge.
 A narrower window displays a size warning and recovers when sufficient space is
 available.
 
+Started with a console of its own (from Explorer, Run, or a shortcut), `hexed`
+centres its window on the mouse pointer, inside that monitor's work area. This
+applies to Windows Terminal and to the classic console host alike. Started from
+a shell, it shares the shell's console and leaves the window where it is.
+
 `hexed` uses the alternate screen buffer, leaving the shell's original screen
 and scrollback intact. On exit it prints one lasting summary:
 
@@ -183,5 +212,13 @@ hexed: C:\path\file.bin: unchanged, 3 pending bytes DISCARDED
 
 ## Building and development
 
-Assembler architecture, build requirements, binary-format policy, and the
-verification record are in [DEVELOPING.md](DEVELOPING.md).
+This is the low fixed-base port of [bitRAKE/hexed](https://github.com/bitRAKE/hexed)
+on this repository's PSDK projection. From the repository root:
+
+```bat
+examples\_build.cmd hexed
+```
+
+Assembler architecture, binary-format policy, what the port changed, and the
+verification record are in [DEVELOPING.md](DEVELOPING.md). Features still
+being thought through are in [roadmap.md](roadmap.md).

@@ -25,13 +25,11 @@
 ; and a mapped view is not: a mapping decides for itself when to write back,
 ; and this program's entire contract is that only F2 does.
 
-define win32.select.types system_console
-define win32.select.downlevel kernel32
-
-include 'common/policy.g'
-include 'common/names.g'
+include 'namespace.inc'
+include 'psdk\um\fileapi.inc'		; ReadFile, WriteFile, SetFilePointerEx, FlushFileBuffers
+include 'psdk\um\WinBase.inc'		; FILE_BEGIN
 include 'hexed.h'
-include 'common/vt.g'	; after the structures; see the note in policy.g
+include 'vt.inc'	; after the structures; see the note in namespace.inc
 
 ; Exposed interface.
 public view_clamped
@@ -48,7 +46,7 @@ public view_restore
 ; do not disturb the persistent rendering state. The state pointer is an
 ; inherited register contract, not a per-object external memory reference.
 
-□	io_count	dd ?
+BSS.4	io_count	dd ?
 
 
 ; RAX = candidate offset -> RAX = the offset the view will actually use:
@@ -262,28 +260,28 @@ proc view_commit
 	mov	dword [rbx + HexState.chg_hi], -1
 
 .m_written GLOBSTR 'written',0
-	lea	rax, [.m_written]
+	mov	eax, .m_written
 	mov	[rbx + HexState.msg], rax
 	mov	eax, 1
 	ret
 
 .clean:
 .m_clean GLOBSTR 'nothing to write',0
-	lea	rax, [.m_clean]
+	mov	eax, .m_clean
 	mov	[rbx + HexState.msg], rax
 	mov	eax, 1
 	ret
 
 .readonly:
 .m_ro GLOBSTR 'read-only: opened without write access',0
-	lea	rax, [.m_ro]
+	mov	eax, .m_ro
 	mov	[rbx + HexState.msg], rax
 	xor	eax, eax
 	ret
 
 .failed:
 .m_failed GLOBSTR 'write failed',0
-	lea	rax, [.m_failed]
+	mov	eax, .m_failed
 	mov	[rbx + HexState.msg], rax
 	xor	eax, eax
 	ret
@@ -303,7 +301,7 @@ proc view_restore
 	mov	dword [rbx + HexState.chg_lo], -1
 	mov	dword [rbx + HexState.chg_hi], -1
 .m_restored GLOBSTR 'restored',0
-	lea	rax, [.m_restored]
+	mov	eax, .m_restored
 	mov	[rbx + HexState.msg], rax
 	mov	eax, 1
 	ret

@@ -14,38 +14,61 @@
 ; scientific notation. No CRT is involved; conversion is local x87 and integer
 ; work. Fixed integer groups use commas; fractional groups use spaces.
 
-define win32.select.types system_console
-define win32.select.downlevel kernel32
-
-include 'common/policy.g'
-include 'common/names.g'
+include 'namespace.inc'
 include 'hexed.h'
-include 'common/vt.g'
+include 'vt.inc'	; after the structures; see the note in namespace.inc
 
 public forms_render
 
 FORMS_COLS := LAYOUT_COLS - 1	; leave column 76 blank; avoid delayed wrap
 
-≡	forms_integer_sizes db 1,2,4,8
-≡	forms_float_sizes db 2,4,8,10
-≡	forms_ten dq 10.0
-≡	forms_one dq 1.0
-≡	forms_scale13 dq 1000000000000
-≡	forms_limit13 dq 10000000000000
-≡	forms_scale18 dq 100000000000000000
-≡	forms_limit18 dq 1000000000000000000
-≡	forms_na db 'n/a'
-≡	forms_nan db 'nan'
-≡	forms_inf db 'inf'
-≡	forms_ninf db '-inf'
-≡	forms_zero db '0'
-≡	forms_nzero db '-0'
+CONST.1	forms_integer_sizes db 1,2,4,8
+CONST.1	forms_float_sizes db 2,4,8,10
+CONST.8	forms_ten dq 10.0
+CONST.8	forms_one dq 1.0
+CONST.8	forms_scale13 dq 1000000000000
+CONST.8	forms_limit13 dq 10000000000000
+CONST.8	forms_scale18 dq 100000000000000000
+CONST.8	forms_limit18 dq 1000000000000000000
+; Words for values that are not numbers. ASCII, so each one's bytes are its
+; columns; `.bytes` carries the count to the code that copies it.
+BLOCK CONST.1
+	iterate <name,text>, forms_na,'n/a', forms_nan,'nan', forms_inf,'inf',		forms_ninf,'-inf', forms_zero,'0', forms_nzero,'-0'
+		name db text
+		name.bytes := $ - name
+	end iterate
+END BLOCK
+
+; Closes a table of label rows, one `db` per screen row, as the panel shows
+; them. Defines BYTES, a row's length, and COLUMNS, the columns a row takes
+; on screen: a UTF-8 sequence is one column, so `│` (E2 94 82) is three bytes
+; in one. Every row must take the same columns.
+macro label_rows? table*, bytes*, columns*
+	local size, row_columns, char
+	size = $ - table
+	assert size mod HELP_ROWS = 0
+	bytes := size / HELP_ROWS
+	repeat HELP_ROWS, row:0
+		row_columns = 0
+		repeat bytes
+			load char:1 from table + row * bytes + % - 1
+			if (char and 0C0h) <> 80h
+				row_columns = row_columns + 1
+			end if
+		end repeat
+		if row = 0
+			columns := row_columns
+		else
+			assert row_columns = columns
+		end if
+	end repeat
+end macro
 
 
 ; Paint has already positioned RDI at column 1 of the first panel row and set
 ; normal attributes. This routine emits exactly four lines and leaves the real
 ; cursor placement to paint's frame_end.
-proc forms_render uses r12
+proc forms_render
 	cmp	dword [rbx + HexState.panel_page], 2
 	jz	.signed
 	cmp	dword [rbx + HexState.panel_page], 3
@@ -65,13 +88,12 @@ endp
 render_float_page:
 	xor	r10d, r10d
 .row:
-	call	emit_float_prefix		; R8D = logical prefix columns
-	mov	r12d, r8d
-	lea	rax, [forms_float_sizes]
+	call	emit_float_prefix
+	mov	eax, forms_float_sizes
 	movzx	ecx, byte [rax + r10]
 	call	format_float		; RSI text, EDX bytes, ECX columns
-	mov	r9d, 12		; reserve the full-width uNN/sNN label columns
-	mov	r8d, r12d
+	mov	r8d, emit_float_prefix.columns
+	mov	r9d, emit_float_suffix.columns
 	call	emit_left_value
 	call	emit_float_suffix
 	call	emit_line_end
@@ -84,34 +106,25 @@ render_float_page:
 render_signed_page:
 	xor	r10d, r10d
 .row:
-	call	emit_signed_prefix	; R8D = logical prefix columns
-	mov	r12d, r8d
-	lea	rax, [forms_integer_sizes]
+	call	emit_signed_prefix
+	mov	eax, forms_integer_sizes
 	movzx	ecx, byte [rax + r10]
 	call	load_integer
 	jc	.unavailable
-	test	r10d, r10d
-	jz	.s8
-	cmp	r10d, 1
-	jz	.s16
-	cmp	r10d, 2
-	jz	.s32
-	jmp	.formatted		; qword is already in RAX
-.s8:	movsx	rax, al
-	jmp	.formatted
-.s16:	movsx	rax, ax
-	jmp	.formatted
-.s32:	movsxd	rax, eax
-.formatted:
+	; sign-extend from the row's width: shift its top bit to bit 63 and back
+	neg	ecx
+	lea	ecx, [64 + rcx*8]	; 64 - 8 * bytes
+	shl	rax, cl
+	sar	rax, cl
 	mov	r9d, 1
 	call	format_integer
 	jmp	.value
 .unavailable:
-	lea	rsi, [forms_na]
-	mov	edx, 3
-	mov	ecx, 3
+	mov	esi, forms_na
+	mov	edx, forms_na.bytes
+	mov	ecx, edx
 .value:
-	mov	r8d, r12d
+	mov	r8d, emit_signed_prefix.columns
 	xor	r9d, r9d		; no suffix: signed field reaches column 76
 	call	emit_aligned_value
 	call	emit_line_end
@@ -124,9 +137,8 @@ render_signed_page:
 render_unsigned_page:
 	xor	r10d, r10d
 .row:
-	call	emit_unsigned_prefix	; R8D = logical prefix columns
-	mov	r12d, r8d
-	lea	rax, [forms_integer_sizes]
+	call	emit_unsigned_prefix
+	mov	eax, forms_integer_sizes
 	movzx	ecx, byte [rax + r10]
 	call	load_integer
 	jc	.unavailable
@@ -134,12 +146,12 @@ render_unsigned_page:
 	call	format_integer
 	jmp	.value
 .unavailable:
-	lea	rsi, [forms_na]
-	mov	edx, 3
-	mov	ecx, 3
+	mov	esi, forms_na
+	mov	edx, forms_na.bytes
+	mov	ecx, edx
 .value:
-	mov	r8d, r12d
-	mov	r9d, 6		; s8 keeps the same field width as s16/s32/s64
+	mov	r8d, emit_unsigned_prefix.columns
+	mov	r9d, emit_unsigned_suffix.columns
 	call	emit_aligned_value
 	call	emit_unsigned_suffix
 	call	emit_line_end
@@ -196,113 +208,84 @@ emit_line_end:
 	retn
 
 
-; Type-label layouts. U+2502 BOX DRAWINGS LIGHT VERTICAL is E2 94 82 in UTF-8.
+; Type labels, one row per R10D: a label's row is its table plus R10D times
+; the row length. Rows shorter than the longest carry trailing spaces; the
+; value fields are right-aligned against a fixed width, so those spaces come
+; out of their padding. The pages align the values with each table's
+; `.columns`. R10D is preserved.
+
 emit_float_prefix:
-	test	r10d, r10d
-	jz	.r0
-	cmp	r10d, 1
-	jz	.r1
-	cmp	r10d, 2
-	jz	.r2
-	<| 'f80 ' |>
-	mov	r8d, 4
+	mov	ecx, .bytes
+	lea	esi, [.table + r10*.bytes]	; a 32-bit image address
+	rep	movsb
 	retn
-.r0:
-	<| 'f16 ' |>
-	mov	r8d, 4
-	retn
-.r1:
-	<| 'f32 ' |>
-	mov	r8d, 4
-	retn
-.r2:
-	<| 'f64 ' |>
-	mov	r8d, 4
-	retn
+
+BLOCK CONST.4
+	.table	db 'f16 '
+		db 'f32 '
+		db 'f64 '
+		db 'f80 '
+	label_rows .table, .bytes, .columns
+END BLOCK
 
 emit_float_suffix:
-	test	r10d, r10d
-	jz	.r0
-	cmp	r10d, 1
-	jz	.r1
-	cmp	r10d, 2
-	jz	.r2
-	<| ' │ u64 │ s64' |>
+	mov	ecx, .bytes
+	imul	esi, r10d, .bytes
+	add	esi, .table
+	rep	movsb
 	retn
-.r0:
-	<| ' │ u8  │ s8' |>
-	retn
-.r1:
-	<| ' │ u16 │ s16' |>
-	retn
-.r2:
-	<| ' │ u32 │ s32' |>
-	retn
+
+BLOCK CONST.4
+	.table	db ' │ u8  │ s8 '
+		db ' │ u16 │ s16'
+		db ' │ u32 │ s32'
+		db ' │ u64 │ s64'
+	label_rows .table, .bytes, .columns
+END BLOCK
 
 emit_signed_prefix:
-	test	r10d, r10d
-	jz	.r0
-	cmp	r10d, 1
-	jz	.r1
-	cmp	r10d, 2
-	jz	.r2
-	<| 'f80 │ u64 │ s64 ' |>
-	mov	r8d, 16
+	mov	ecx, .bytes
+	imul	esi, r10d, .bytes
+	add	esi, .table
+	rep	movsb
 	retn
-.r0:
-	<| 'f16 │ u8  │ s8 ' |>
-	mov	r8d, 15
-	retn
-.r1:
-	<| 'f32 │ u16 │ s16 ' |>
-	mov	r8d, 16
-	retn
-.r2:
-	<| 'f64 │ u32 │ s32 ' |>
-	mov	r8d, 16
-	retn
+
+BLOCK CONST.4
+	.table	db 'f16 │ u8  │ s8  '
+		db 'f32 │ u16 │ s16 '
+		db 'f64 │ u32 │ s32 '
+		db 'f80 │ u64 │ s64 '
+	label_rows .table, .bytes, .columns
+END BLOCK
 
 emit_unsigned_prefix:
-	test	r10d, r10d
-	jz	.r0
-	cmp	r10d, 1
-	jz	.r1
-	cmp	r10d, 2
-	jz	.r2
-	<| 'f80 │ u64 ' |>
-	mov	r8d, 10
-	retn
-.r0:
-	<| 'f16 │ u8 ' |>
-	mov	r8d, 9
-	retn
-.r1:
-	<| 'f32 │ u16 ' |>
-	mov	r8d, 10
-	retn
-.r2:
-	<| 'f64 │ u32 ' |>
-	mov	r8d, 10
+	mov	ecx, .bytes
+	imul	esi, r10d, .bytes
+	add	esi, .table
+	rep	movsb
 	retn
 
+BLOCK CONST.4
+	.table	db 'f16 │ u8  '
+		db 'f32 │ u16 '
+		db 'f64 │ u32 '
+		db 'f80 │ u64 '
+	label_rows .table, .bytes, .columns
+END BLOCK
+
 emit_unsigned_suffix:
-	test	r10d, r10d
-	jz	.r0
-	cmp	r10d, 1
-	jz	.r1
-	cmp	r10d, 2
-	jz	.r2
-	<| ' │ s64' |>
+	mov	ecx, .bytes
+	lea	esi, [.table + r10*.bytes]
+	rep	movsb
 	retn
-.r0:
-	<| ' │ s8' |>
-	retn
-.r1:
-	<| ' │ s16' |>
-	retn
-.r2:
-	<| ' │ s32' |>
-	retn
+
+BLOCK CONST.4
+	.table	db ' │ s8 '
+		db ' │ s16'
+		db ' │ s32'
+		db ' │ s64'
+	label_rows .table, .bytes, .columns
+END BLOCK
 
 
 ; ECX = byte width (1/2/4/8). RAX = zero-extended little-endian value, CF clear;
@@ -816,37 +799,37 @@ proc format_float
 	ret
 
 .unavailable:
-	lea	rsi, [forms_na]
-	mov	edx, 3
-	mov	ecx, 3
+	mov	esi, forms_na
+	mov	edx, forms_na.bytes
+	mov	ecx, edx
 	ret
 .nan:
-	lea	rsi, [forms_nan]
-	mov	edx, 3
-	mov	ecx, 3
+	mov	esi, forms_nan
+	mov	edx, forms_nan.bytes
+	mov	ecx, edx
 	ret
 .infinity:
 	cmp	dword [negative], 0
 	jnz	.negative_infinity
-	lea	rsi, [forms_inf]
-	mov	edx, 3
-	mov	ecx, 3
+	mov	esi, forms_inf
+	mov	edx, forms_inf.bytes
+	mov	ecx, edx
 	ret
 .negative_infinity:
-	lea	rsi, [forms_ninf]
-	mov	edx, 4
-	mov	ecx, 4
+	mov	esi, forms_ninf
+	mov	edx, forms_ninf.bytes
+	mov	ecx, edx
 	ret
 .zero:
 	cmp	dword [negative], 0
 	jnz	.negative_zero
-	lea	rsi, [forms_zero]
-	mov	edx, 1
-	mov	ecx, 1
+	mov	esi, forms_zero
+	mov	edx, forms_zero.bytes
+	mov	ecx, edx
 	ret
 .negative_zero:
-	lea	rsi, [forms_nzero]
-	mov	edx, 2
-	mov	ecx, 2
+	mov	esi, forms_nzero
+	mov	edx, forms_nzero.bytes
+	mov	ecx, edx
 	ret
 endp
